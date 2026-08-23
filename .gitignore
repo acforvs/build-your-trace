@@ -1,5 +1,6 @@
 dist/
 node_modules/
+.netlify/
 __pycache__/
 *.py[cod]
 .env
