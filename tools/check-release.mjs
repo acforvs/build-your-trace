@@ -2,7 +2,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import { extname, relative } from "node:path";
 
 const root = new URL("../", import.meta.url);
-const ignored = new Set([".git", "dist"]);
+const ignored = new Set([".git", ".netlify", "dist"]);
 const allowedTopLevel = new Set([".github", ".gitignore", "README.md", "assets", "benchmarks", "data", "index.html", "netlify.toml", "package.json", "schemas", "server.mjs", "src", "styles.css", "tools"]);
 const rejectedExtensions = new Set([".nsys-rep", ".sqlite", ".pyc", ".pyo"]);
 const errors = [];

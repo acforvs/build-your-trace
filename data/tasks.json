@@ -1,8 +1,8 @@
 {
   "social": {
     "github": {
-      "enabled": false,
-      "url": "",
+      "enabled": true,
+      "url": "https://github.com/acforvs/build-your-trace",
       "label": "Star on GitHub",
       "completionPrompt": "Found this useful? Star Build Your Trace on GitHub."
     }
