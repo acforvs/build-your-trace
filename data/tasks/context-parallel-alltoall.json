@@ -18,14 +18,14 @@
   "gridSegments": 13,
   "verification": {
     "status": "measured",
-    "label": "Measured TorchTitan/PyTorch native CP · rank 0 CUDA streams",
-    "implementation": "TorchTitan Qwen3 model with PyTorch 2.9 native context_parallel, FlashAttention, CP=4, cyclic all-to-all K/V rotation",
+    "label": "Measured PyTorch native CP on a TorchTitan Qwen3 model · rank 0 CUDA streams",
+    "implementation": "Custom benchmark applying PyTorch 2.9 native context_parallel to a TorchTitan v0.2.0 Qwen3 model, with FlashAttention, CP=4, and cyclic all-to-all K/V rotation",
     "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 query heads, 4 KV heads, sequence 16384, BF16; displayed detail is Layer 0",
     "measurement": "68.675 ms full CUDA-event step; 66.961 ms displayed semantic GPU window",
     "timeline": "Exact rank-0 Nsight compute-stream and NCCL-stream timestamps; Layer 1 is explicit fixed context."
   },
   "description": [
-    "This uses the same native ring-attention math as the all-gather task, but each iteration cyclically permutes the current concatenated K/V shard with an NCCL all-to-all primitive. It does not transpose sequence into attention heads and is therefore not Ulysses.",
+    "This custom benchmark applies PyTorch's native ring-attention math to the TorchTitan Qwen3 model; it is not a claim that TorchTitan v0.2.0 shipped supported Qwen3 context parallelism. Each iteration cyclically permutes the current concatenated K/V shard with an NCCL all-to-all primitive. It does not transpose sequence into attention heads and is therefore not Ulysses.",
     "Forward has three K/V rotations for four CP ranks. Backward interleaves three K/V rotations needed by partial FlashAttention backward with four dK/dV rotations that accumulate and return gradients to the original shard owners.",
     "The trace shows measured Layer 0 detail. Fixed omission bands hide Layer 1 compute and communication so they provide elapsed context without demonstrating the Layer 0 answer."
   ],

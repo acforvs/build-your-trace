@@ -28,12 +28,12 @@
     },
     "workload": {
       "Model": "Qwen3-235B-A22B: 94 layers, hidden size 4096, 64 query heads, 4 KV heads, 128 experts, top-8 routing.",
-      "Microbatch": "2 sequences × 4096 tokens unless a challenge says otherwise.",
-      "Precision": "BF16 parameters and activations; FP32 optimizer state is omitted from trace widths.",
-      "Efficiency": "70% tensor-core efficiency, 75% HBM efficiency, and explicit launch/collective latency floors."
+      "Workload": "Task-specific. Each measured challenge states its batch, sequence length, topology, and displayed scope.",
+      "Precision": "BF16 parameters and activations unless the challenge says otherwise; gradient-reduction dtype is stated per task.",
+      "Analytical efficiency": "70% tensor-core efficiency, 75% HBM efficiency, and explicit launch/collective latency floors where a model is used."
     },
     "notes": [
-      "The bars are roofline teaching estimates, not benchmark claims. Real kernels depend on shapes, software, topology, contention, and fusion.",
+      "Measured bars come from captured GPU intervals or documented aggregate envelopes. Roofline and bandwidth assumptions apply only to explicitly analytical content.",
       "NVIDIA quotes 1,979 BF16 TFLOP/s with sparsity for H100 SXM; this game uses roughly half of that as the dense peak.",
       "NVLink is shown at a conservative effective 400 GB/s even though aggregate bidirectional link peak is higher. InfiniBand uses 400 Gb/s = 50 GB/s.",
       "Dense exercises use Qwen-shaped dimensions as a controlled surrogate. MoE exercises use the published Qwen3-235B-A22B expert configuration."

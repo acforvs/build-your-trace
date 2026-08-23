@@ -186,7 +186,7 @@
       "title": "What changes when experts are partitioned with EP?",
       "summary": "Compare full expert materialization with expert partitioning across EP ranks.",
       "intro": "Both layouts retain the same total expert model and the same persistent expert shard per rank. What changes is the expert ownership set materialized by each rank and the process group over which that set is sharded.",
-      "caveat": "Compare per-rank materialization and traffic, not aggregate model size. Dense parameters remain FSDP=8 in both panels.",
+      "caveat": "Compare per-rank materialization and traffic, not aggregate model size. Dense parameters remain FSDP=8 in both panels. Both controlled benchmarks force balanced round-robin expert assignment, so this comparison does not model router imbalance.",
       "tags": [
         "MoE",
         "FSDP",

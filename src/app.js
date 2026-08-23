@@ -206,18 +206,18 @@ function renderMethod() {
   methodContent.innerHTML = `
     <div class="method-intro">
       <strong>Two kinds of timing are used.</strong>
-      <p>Measured tasks use captured GPU intervals. Analytical variants keep compute fixed and rescale the named collectives with the bandwidth shown below.</p>
+      <p>Measured tasks use captured GPU intervals or documented aggregate envelopes. Analytical variants keep measured compute fixed and rescale the named collectives with the assumptions shown below.</p>
     </div>
     <div class="method-formulas">
-      <div><span>Compute or memory</span><code>t = max(FLOPs / ηF, bytes / ηB)</code></div>
-      <div><span>Collective</span><code>t ≈ bytes per rank / effective fabric BW + latency</code></div>
+      <div><span>Analytical compute or memory</span><code>t = max(FLOPs / ηF, bytes / ηB)</code></div>
+      <div><span>Analytical collective</span><code>t ≈ bytes per rank / effective fabric BW + latency</code></div>
     </div>
     <div class="method-section-heading"><span>Reference hardware</span><small>H100 SXM · effective rates are lower than peak</small></div>
     <div class="assumption-grid">
       ${Object.entries(hardware).map(([key, item]) => `<article><span>${escapeHtml(key)}</span><strong>${escapeHtml(item.value)}</strong></article>`).join("")}
     </div>
     <div class="method-columns">
-      <div><h3>Reference workload</h3><dl>${Object.entries(workload).map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></div>
+      <div><h3>Reference shapes and conventions</h3><dl>${Object.entries(workload).map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></div>
       <div><h3>Read widths within one trace</h3><p>Measured tasks use captured GPU intervals or grouped kernel envelopes. Analytical variants rescale only the communication named in the task.</p><p>Treat widths as local to each trace; software, topology, and contention change them.</p></div>
     </div>`;
 }

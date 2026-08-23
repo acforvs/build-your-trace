@@ -18,14 +18,14 @@
   "gridSegments": 13,
   "verification": {
     "status": "measured",
-    "label": "Measured TorchTitan/PyTorch native CP · rank 0 CUDA streams",
-    "implementation": "TorchTitan Qwen3 model with PyTorch 2.9 native context_parallel, FlashAttention, CP=4, all-gather K/V rotation",
+    "label": "Measured PyTorch native CP on a TorchTitan Qwen3 model · rank 0 CUDA streams",
+    "implementation": "Custom benchmark applying PyTorch 2.9 native context_parallel to a TorchTitan v0.2.0 Qwen3 model, with FlashAttention, CP=4, and all-gather K/V rotation",
     "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 query heads, 4 KV heads, sequence 16384, BF16; displayed detail is Layer 0",
     "measurement": "66.865 ms full CUDA-event step; 65.196 ms displayed semantic GPU window",
     "timeline": "Exact rank-0 Nsight compute-stream and NCCL-stream timestamps; Layer 1 is explicit fixed context."
   },
   "description": [
-    "This is PyTorch's ring-attention algorithm using its all-gather rotation mode. Rank 0 computes attention against local K/V first. One NCCL all-gather materializes all four K/V shards, after which the remaining partial FlashAttention calls consume views of that gathered buffer.",
+    "This custom benchmark applies PyTorch's ring-attention algorithm to the TorchTitan Qwen3 model; it is not a claim that TorchTitan v0.2.0 shipped supported Qwen3 context parallelism. Rank 0 computes attention against local K/V first. One NCCL all-gather materializes all four K/V shards, after which the remaining partial FlashAttention calls consume views of that gathered buffer.",
     "Backward gathers K/V again, runs one partial FlashAttention backward per shard, and cyclically returns the accumulated dK/dV shard after every step. The dK/dV path always uses cyclic all-to-all, even when forward K/V uses all-gather.",
     "The trace shows measured Layer 0 detail. The fixed ellipsis bands deliberately hide Layer 1 compute and communication so they provide context without revealing the Layer 0 solution. They are elapsed-work annotations, not idle gaps."
   ],

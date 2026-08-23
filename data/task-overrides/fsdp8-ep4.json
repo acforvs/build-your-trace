@@ -15,14 +15,15 @@
     "status": "measured",
     "label": "Measured, FQN-labeled, and Perfetto-audited on 8× H100",
     "implementation": "TorchTitan v0.2.0 FSDP2 with an explicit dependency-ordered prefetch graph",
-    "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536.",
+    "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536; deterministic balanced round-robin expert assignment.",
     "measurement": "69.189 ms end-to-end; 68.372 ms rank-0 collective window. Clean timing, FQN-labeled Nsight, and expanded-label Perfetto captures were recorded separately from the same frozen script.",
     "timeline": "Actual rank-0 GPU offsets and kernel durations from the clean capture. FSDP module assignments are direct runtime-to-FQN correlations from the labeled capture."
   },
   "description": [
     "This challenge shows the complete captured scope: token embedding, two Qwen3 MoE layers, final norm, output projection, cross-entropy, and backward through the embedding. The optimizer step is deliberately outside this benchmark and is not implied by the timeline.",
     "The prefetch graph is explicit and dependency-ordered. Forward queues L0 dense → L0 experts → L1 dense → L1 experts. Backward queues L1 dense → L1 experts → L0 dense → L0 experts. A labeled Perfetto trace and a separate FQN-labeled Nsight capture verify this order.",
-    "The local attention, routing, layout, and gradient-pack kernels are fixed context. Place FSDP all-gathers and reduce-scatters together with one forward and one backward EP path, then identify where expert compute waits for both parameter and activation readiness."
+    "The local attention, routing, layout, and gradient-pack kernels are fixed context. Place FSDP all-gathers and reduce-scatters together with one forward and one backward EP path, then identify where expert compute waits for both parameter and activation readiness.",
+    "Routing uses TorchTitan's debug balanced round-robin assignment so every expert receives the same number of synthetic token copies. This makes expert compute and all-to-all sizes deterministic; it does not model natural router imbalance."
   ],
   "tracks": [
     {

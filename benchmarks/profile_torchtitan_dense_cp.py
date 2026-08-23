@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile two dense Qwen-shaped layers with TorchTitan context parallelism."""
+"""Apply PyTorch native context parallelism to two TorchTitan Qwen-shaped layers."""
 
 from __future__ import annotations
 
@@ -174,7 +174,7 @@ def main() -> None:
             "schema_version": 1,
             "timestamp_unix": time(),
             "scenario": f"dense_cp_{args.rotate_method}",
-            "implementation": "TorchTitan Qwen3 with native context_parallel context",
+            "implementation": "PyTorch native context_parallel context applied by this benchmark to TorchTitan Qwen3",
             "torchtitan_revision": git_revision(args.torchtitan_root),
             "torch_version": torch.__version__,
             "cuda_version": torch.version.cuda,

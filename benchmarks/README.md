@@ -16,6 +16,10 @@ export TRACE_RESULTS=/path/to/trace-results
 
 Install a PyTorch build compatible with your NVIDIA driver and follow TorchTitan's installation notes in that isolated environment. Nsight Systems is required only for `clean` and `labeled` captures.
 
+The full MoE FSDP scenarios use TorchTitan's debug balanced round-robin routing override. This gives every expert the same number of synthetic token copies, making expert compute and all-to-all sizes deterministic; these runs do not measure natural router imbalance. The standalone `moe-single` and `moe-ep4` scenarios use ordinary softmax top-k routing.
+
+The CP scenarios are custom benchmark integrations: they apply PyTorch's native `context_parallel` context to the TorchTitan v0.2.0 Qwen3 model and explicitly shard its RoPE cache. They do not imply that TorchTitan v0.2.0 shipped supported Qwen3 CP integration.
+
 ## Launcher
 
 ```bash

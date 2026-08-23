@@ -8,7 +8,7 @@ for (const path of ["index.html", "styles.css", "src", "data", "assets"]) {
   await cp(new URL(path, root), new URL(path, output), { recursive: true });
 }
 
-const allowedExtensions = new Set([".css", ".html", ".js", ".json", ".svg"]);
+const allowedExtensions = new Set([".css", ".html", ".js", ".json", ".png", ".svg"]);
 async function inspect(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, directory);

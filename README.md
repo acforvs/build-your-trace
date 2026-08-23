@@ -6,6 +6,10 @@
 
 Build Your Trace is a static set of interactive exercises about execution order, dependencies, and communication in modern LLM training. Start with a single-GPU forward/backward pass, then work through DDP, tensor parallelism, FSDP, expert parallelism, and context parallelism. The timelines use measured GPU runs where available and clearly marked analytical variants where hardware topology is modeled.
 
+**[Open the interactive lessons →](https://trace.vladsavinov.com/)**
+
+![Build Your Trace social preview](assets/social-card.png)
+
 ## Run locally
 
 Node.js 20 or newer is enough; the site has no runtime packages to install.
@@ -40,3 +44,7 @@ TorchTitan scenarios use the public `v0.2.0` tag. GPU package installation is in
 ## Content
 
 Tasks live in `data/` and are rendered by the shared engine in `src/app.js`. Add a task JSON file, register it in `data/tasks.json`, add its teaching notes, then run `npm run check`.
+
+## License
+
+[MIT](LICENSE)

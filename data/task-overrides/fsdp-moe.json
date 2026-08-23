@@ -28,7 +28,7 @@
     "status": "measured",
     "label": "Measured, FQN-correlated, and module-labeled on 8× H100",
     "implementation": "TorchTitan v0.2.0 Qwen3 MoE with separate nested FSDP2 states for each routed-expert module",
-    "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536; EP=1.",
+    "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536; EP=1; deterministic balanced round-robin expert assignment.",
     "measurement": "152.008 ms module-labeled step; exact 151.049 ms rank-0 first-to-last collective window shown.",
     "timeline": "Actual rank-0 module-labeled GPU offsets and durations; all FSDP collectives are separately correlated to FQNs."
   },
@@ -36,7 +36,8 @@
     "This is the EP=1 counterpart to the expert-FSDP + EP challenge. Every rank processes its own data-parallel batch and there are no dispatch/combine all-to-alls. Local MoE remains router → permute → grouped SwiGLU → weighted unpermute.",
     "Each layer's dense attention/router state and routed-expert state are wrapped separately with FSDP=8. The 128-expert BF16 module is 4.5 GiB: its all-gather transfers 3.9375 GiB per rank and remains exposed long after attention finishes.",
     "Backward is even more communication-bound. Each FP32 expert-gradient reduce-scatter moves 7.875 GiB per rank and measured 23.7–23.8 ms. The serialized reduction stream delays the next dense RS and therefore the next layer's backward.",
-    "TorchTitan v0.2.0 normally folds experts into the layer FSDP state when EP=1. This controlled benchmark uses the same FSDP2 primitives and Qwen implementation but wraps experts separately to expose production-relevant dense/expert prefetch granularity."
+    "TorchTitan v0.2.0 normally folds experts into the layer FSDP state when EP=1. This controlled benchmark uses the same FSDP2 primitives and Qwen implementation but wraps experts separately to expose production-relevant dense/expert prefetch granularity.",
+    "Routing uses TorchTitan's debug balanced round-robin assignment so every expert receives the same number of synthetic token copies. This makes expert compute and communication deterministic; it does not model natural router imbalance."
   ],
   "tracks": [
     {

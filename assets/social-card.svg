@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Build Your Trace</title>
+  <desc id="desc">Interactive exercises for understanding distributed LLM training traces.</desc>
+  <rect width="1200" height="630" fill="#f4f4f1"/>
+  <rect x="54" y="54" width="1092" height="522" rx="8" fill="#ffffff" stroke="#d7d8d5" stroke-width="2"/>
+
+  <g transform="translate(96 92)">
+    <rect width="68" height="68" rx="10" fill="#25282b"/>
+    <path d="M14 21h40M14 34h40M14 47h40" stroke="#7b8085" stroke-width="2" stroke-linecap="round"/>
+    <rect x="18" y="15" width="17" height="12" rx="2" fill="#70b8e6"/>
+    <rect x="38" y="28" width="17" height="12" rx="2" fill="#a98ad8"/>
+    <rect x="23" y="41" width="23" height="12" rx="2" fill="#e9a45f"/>
+  </g>
+
+  <text x="188" y="121" fill="#25282b" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0.5">BUILD YOUR TRACE</text>
+  <text x="96" y="248" fill="#202326" font-family="Inter, Arial, sans-serif" font-size="70" font-weight="760">Understand the system</text>
+  <text x="96" y="327" fill="#202326" font-family="Inter, Arial, sans-serif" font-size="70" font-weight="760">behind the timeline.</text>
+  <text x="98" y="389" fill="#62676c" font-family="Inter, Arial, sans-serif" font-size="25">Interactive exercises for distributed LLM training traces</text>
+
+  <g transform="translate(98 442)" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="650">
+    <rect width="78" height="38" rx="4" fill="#eaf4fb" stroke="#bfd7e8"/><text x="22" y="25" fill="#28628d">DDP</text>
+    <rect x="92" width="66" height="38" rx="4" fill="#f1ecf8" stroke="#d8c9ea"/><text x="116" y="25" fill="#6f4d92">TP</text>
+    <rect x="172" width="86" height="38" rx="4" fill="#eef5ef" stroke="#c9ddcc"/><text x="194" y="25" fill="#386c43">FSDP</text>
+    <rect x="272" width="66" height="38" rx="4" fill="#fff1e6" stroke="#edcfb6"/><text x="294" y="25" fill="#945b2e">EP</text>
+    <rect x="352" width="66" height="38" rx="4" fill="#eaf5f4" stroke="#c4dddb"/><text x="374" y="25" fill="#326f6a">CP</text>
+  </g>
+
+  <text x="96" y="537" fill="#73787d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">trace.vladsavinov.com</text>
+  <text x="1104" y="537" text-anchor="end" fill="#73787d" font-family="Inter, Arial, sans-serif" font-size="18">Measured schedules · explicit analytical variants</text>
+</svg>
