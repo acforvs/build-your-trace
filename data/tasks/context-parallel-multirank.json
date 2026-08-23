@@ -1,0 +1,183 @@
+{
+  "id": "context-parallel-multirank",
+  "order": 16,
+  "section": "V · Context parallelism",
+  "category": "Context Parallel",
+  "catalogHidden": true,
+  "comparisonSource": true,
+  "title": "Multi-rank NCCL wait versus transfer",
+  "summary": "See why one rank's NCCL interval can include peer wait as well as data movement.",
+  "difficulty": 5,
+  "topology": "CP=4 · selected ranks 0 and 3 · 4×H100 NVLink",
+  "scope": "Measured Layer 0 attention-forward slice",
+  "timelineMode": "absolute",
+  "totalMs": 5.25,
+  "pxPerMs": 180,
+  "gridSegments": 7,
+  "verification": {
+    "status": "measured",
+    "label": "Measured multi-rank TorchTitan/PyTorch native CP",
+    "implementation": "TorchTitan Qwen3 model with PyTorch 2.9 native context_parallel, FlashAttention, CP=4, all-gather K/V rotation",
+    "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 query heads, 4 KV heads, global sequence 16384, BF16",
+    "measurement": "Ranks 0 and 3 from one Nsight Systems capture; common GPU timestamp origin",
+    "timeline": "Exact stream-7 kernels, dependency wait intervals, and stream-23 NCCL all-gather intervals for ranks 0 and 3"
+  },
+  "description": [
+    "Ranks 0 and 3 move the same K/V payload and finish the same collective at almost the same time. Rank 3's NCCL kernel starts about 0.75 ms earlier, so its longer bar cannot represent extra bytes.",
+    "The rank 3 interval includes time resident while peer kernels have not yet started making collective progress, followed by transfer and overlap. A single-rank trace cannot separate those components."
+  ],
+  "insight": "A long NCCL bar is not a direct bandwidth measurement: it may contain peer wait, transfer, and compute contention.",
+  "hint": "Compare the same collective across ranks. If one bar starts earlier but they finish together, the extra width is not extra payload transfer.",
+  "explanation": "the aligned ranks show why NCCL kernel duration must not be interpreted as pure send time.",
+  "tracks": [
+    {
+      "id": "r0-compute",
+      "label": "Rank 0 compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "r0-comm",
+      "label": "Rank 0 CP K/V exchange",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    },
+    {
+      "id": "r3-compute",
+      "label": "Rank 3 compute",
+      "subtitle": "Rank 3 · CUDA stream 7"
+    },
+    {
+      "id": "r3-comm",
+      "label": "Rank 3 CP K/V exchange",
+      "subtitle": "Rank 3 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "r0-local-attention",
+      "label": "Rank 0 local K/V FlashAttention",
+      "shortLabel": "Local FA",
+      "type": "attention",
+      "startMs": 2.254756,
+      "durationMs": 0.891168,
+      "track": "r0-compute",
+      "fixed": true,
+      "description": "Exact local FlashAttention kernel. The NCCL kernel was already submitted and becomes resident near the end of this compute."
+    },
+    {
+      "id": "r0-local-merge",
+      "label": "Rank 0 local attention online-softmax merge",
+      "shortLabel": "Merge",
+      "type": "routing",
+      "startMs": 3.147684,
+      "durationMs": 0.15168,
+      "track": "r0-compute",
+      "fixed": true
+    },
+    {
+      "id": "r0-kv-wait",
+      "label": "Rank 0 exposed wait for gathered remote K/V",
+      "shortLabel": "Wait for gathered K/V",
+      "type": "bubble",
+      "startMs": 3.299364,
+      "durationMs": 1.057248,
+      "track": "r0-compute",
+      "fixed": true,
+      "description": "The local result is merged, but the first remote K/V view cannot be prepared until the all-gather completes."
+    },
+    {
+      "id": "r0-remote-kv-prep",
+      "label": "Rank 0 prepare first gathered remote K/V view",
+      "shortLabel": "K/V view",
+      "type": "routing",
+      "startMs": 4.356612,
+      "durationMs": 0.094432,
+      "track": "r0-compute",
+      "fixed": true
+    },
+    {
+      "id": "r0-remote-attention",
+      "label": "Rank 0 first remote K/V FlashAttention",
+      "shortLabel": "Remote K/V",
+      "type": "attention",
+      "startMs": 4.452612,
+      "durationMs": 0.777761,
+      "track": "r0-compute",
+      "fixed": true
+    },
+    {
+      "id": "r0-kv-allgather",
+      "label": "Rank 0 layer 0 forward K/V all-gather GPU kernel",
+      "shortLabel": "K/V AG",
+      "type": "collective",
+      "startMs": 3.012964,
+      "durationMs": 1.342272,
+      "track": "r0-comm",
+      "fixed": true,
+      "description": "Submitted before local FlashAttention; GPU residency begins during FlashAttention and ends at 4.355 ms."
+    },
+    {
+      "id": "r3-local-attention",
+      "label": "Rank 3 local K/V FlashAttention",
+      "shortLabel": "Local FA",
+      "type": "attention",
+      "startMs": 2.259736,
+      "durationMs": 1.10322,
+      "track": "r3-compute",
+      "fixed": true,
+      "description": "Exact local FlashAttention kernel running concurrently with the resident NCCL kernel."
+    },
+    {
+      "id": "r3-local-merge",
+      "label": "Rank 3 local attention online-softmax merge",
+      "shortLabel": "Merge",
+      "type": "routing",
+      "startMs": 3.364748,
+      "durationMs": 0.153151,
+      "track": "r3-compute",
+      "fixed": true
+    },
+    {
+      "id": "r3-kv-wait",
+      "label": "Rank 3 exposed wait for gathered remote K/V",
+      "shortLabel": "Wait for gathered K/V",
+      "type": "bubble",
+      "startMs": 3.517899,
+      "durationMs": 0.823255,
+      "track": "r3-compute",
+      "fixed": true,
+      "description": "The NCCL kernel is resident but the gathered result is not yet complete and consumable."
+    },
+    {
+      "id": "r3-remote-kv-prep",
+      "label": "Rank 3 prepare first gathered remote K/V view",
+      "shortLabel": "K/V view",
+      "type": "routing",
+      "startMs": 4.341154,
+      "durationMs": 0.094655,
+      "track": "r3-compute",
+      "fixed": true
+    },
+    {
+      "id": "r3-remote-attention",
+      "label": "Rank 3 first remote K/V FlashAttention",
+      "shortLabel": "Remote K/V",
+      "type": "attention",
+      "startMs": 4.437633,
+      "durationMs": 0.78972,
+      "track": "r3-compute",
+      "fixed": true
+    },
+    {
+      "id": "r3-kv-allgather",
+      "label": "Rank 3 layer 0 forward K/V all-gather GPU kernel",
+      "shortLabel": "K/V AG · wait + transfer",
+      "type": "collective",
+      "startMs": 2.259736,
+      "durationMs": 2.079754,
+      "track": "r3-comm",
+      "fixed": true,
+      "description": "Same payload as rank 0. Its earlier GPU start makes this interval include waiting for peer progress as well as transfer and compute contention."
+    }
+  ],
+  "preview": []
+}

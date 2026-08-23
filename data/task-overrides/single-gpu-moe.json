@@ -1,0 +1,123 @@
+{
+  "id": "single-gpu-moe",
+  "order": 2,
+  "section": "I · Execution fundamentals",
+  "category": "MoE",
+  "resourceIds": [
+    "moe",
+    "torchtitan"
+  ],
+  "title": "MoE forward on one GPU",
+  "difficulty": 2,
+  "topology": "1× H100",
+  "scope": "One Qwen3-235B-A22B-shaped MoE forward · BF16 · sequence 4096",
+  "timelineMode": "absolute",
+  "totalMs": 6.782722,
+  "pxPerMs": 450,
+  "gridSegments": 10,
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan single-H100 MoE forward",
+    "implementation": "TorchTitan v0.2.0 Qwen3 MoE with real softmax top-k routing and torch._grouped_mm SwiGLU",
+    "workload": "Hidden 4096, 128 experts, top-8, expert intermediate 1536, batch 1, sequence 4096, BF16 synthetic activations",
+    "measurement": "7.105 ms CUDA-event wall time; exact 6.783 ms rank-0 GPU kernel window shown",
+    "timeline": "Exact first-to-last rank-0 kernel window, partitioned at the first kernel of each semantic NVTX range."
+  },
+  "description": [
+    "This forward-only challenge isolates the sparse feed-forward path: produce router logits, select top-8 experts, reorder token copies into expert-major order, run grouped SwiGLU, then weight and scatter-add expert outputs back into token order.",
+    "There is no dispatch or combine collective on one GPU. In this task, permute and unpermute mean local index generation, gather, weighting, and scatter—not network communication.",
+    "The grouped-expert block includes TorchTitan's alignment padding plus three grouped GEMMs and the SwiGLU activation."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "router",
+      "label": "Router GEMM",
+      "shortLabel": "Router",
+      "type": "routing",
+      "startMs": 0,
+      "durationMs": 0.098272,
+      "track": "compute",
+      "description": "Project each 4096-wide token activation to 128 expert logits. Width is the measured envelope until the first softmax/top-k kernel."
+    },
+    {
+      "id": "topk",
+      "label": "Softmax + top-k",
+      "shortLabel": "Top-8",
+      "type": "routing",
+      "startMs": 0.098272,
+      "durationMs": 0.377856,
+      "track": "compute",
+      "description": "Normalize router logits, select eight experts per token, normalize selected weights, and count assignments."
+    },
+    {
+      "id": "permute",
+      "label": "Permute tokens by expert",
+      "shortLabel": "Permute",
+      "type": "routing",
+      "startMs": 0.476128,
+      "durationMs": 0.465952,
+      "track": "compute",
+      "description": "Stable-sort routing assignments and gather token copies into expert-major order."
+    },
+    {
+      "id": "experts",
+      "label": "Grouped expert SwiGLU",
+      "shortLabel": "Grouped SwiGLU",
+      "type": "mlp",
+      "startMs": 0.94208,
+      "durationMs": 4.159362,
+      "track": "compute",
+      "description": "Align expert token groups, run grouped gate/up GEMMs, SiLU × up, and the grouped down GEMM."
+    },
+    {
+      "id": "unpermute",
+      "label": "Unpermute + weighted combine",
+      "shortLabel": "Unpermute + weights",
+      "type": "routing",
+      "startMs": 5.101442,
+      "durationMs": 1.68128,
+      "track": "compute",
+      "description": "Multiply each expert output by its routing weight and scatter-add the top-8 contributions back to original token order."
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "routing",
+      "label": "Routing + layout",
+      "blockIds": [
+        "router",
+        "topk",
+        "permute",
+        "unpermute"
+      ]
+    },
+    {
+      "id": "experts",
+      "label": "Experts",
+      "blockIds": [
+        "experts"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "routing",
+      "weight": 0.3
+    },
+    {
+      "type": "mlp",
+      "weight": 3.8
+    },
+    {
+      "type": "routing",
+      "weight": 1.7
+    }
+  ]
+}

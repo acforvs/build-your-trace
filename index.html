@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="An interactive game for learning LLM training traces." />
+    <title>Build Your Trace</title>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("build-your-trace:theme:v1");
+        document.documentElement.dataset.theme = savedTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#/" aria-label="Build Your Trace home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Build Your Trace</span>
+      </a>
+      <nav class="header-actions" aria-label="Primary navigation">
+        <button class="header-link" data-scroll-challenges type="button">Challenges</button>
+        <button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">
+          <span data-theme-icon aria-hidden="true">☾</span><span class="theme-toggle-label" data-theme-label>Night</span>
+        </button>
+      </nav>
+    </header>
+
+    <main id="app" tabindex="-1"></main>
+
+    <dialog id="method-dialog" class="method-dialog">
+      <form method="dialog" class="dialog-shell">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Timing model</p>
+            <h2>How block widths are estimated</h2>
+          </div>
+          <button class="icon-button" value="close" aria-label="Close">×</button>
+        </div>
+        <div id="method-content"></div>
+      </form>
+    </dialog>
+
+    <template id="home-template">
+      <section class="hero wrap" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow">Interactive distributed-training exercises</p>
+          <h1>Build the trace.<br /><span>Understand the system.</span></h1>
+          <p class="hero-lede">Build training traces by placing kernels and collectives in dependency order. Start with a single GPU, then add TP, FSDP, EP, and CP.</p>
+          <div class="hero-actions">
+            <button class="hero-primary" data-scroll-challenges type="button">Browse challenges <span>↓</span></button>
+            <button class="hero-secondary" data-method-open type="button">Review timing assumptions</button>
+          </div>
+          <div class="hero-meta">
+            <span><b data-task-count></b></span>
+            <span>Qwen3-235B-A22B shapes</span>
+            <span>H100 reference</span>
+          </div>
+        </div>
+        <div class="trace-illustration" aria-hidden="true">
+          <svg class="trace-sketch" viewBox="0 0 560 330" role="presentation">
+            <defs>
+              <filter id="rough-line" x="-5%" y="-5%" width="110%" height="110%">
+                <feTurbulence type="fractalNoise" baseFrequency="0.025" numOctaves="2" seed="7" result="noise" />
+                <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2" />
+              </filter>
+            </defs>
+            <path class="sketch-paper" d="M28 34 C122 29 226 36 318 31 C405 27 472 35 528 30 L531 292 C416 297 329 289 226 295 C145 299 83 291 31 296 Z" />
+            <path class="sketch-paper-echo" d="M31 37 C124 32 224 39 319 34 C406 30 471 38 525 33 L528 289 C414 294 328 286 225 292 C145 296 86 288 34 293 Z" />
+            <g class="sketch-track" filter="url(#rough-line)">
+              <path d="M74 112 C171 109 261 114 484 110" />
+              <path d="M74 218 C192 215 318 220 484 216" />
+              <circle cx="57" cy="111" r="4" />
+              <circle cx="57" cy="217" r="4" />
+            </g>
+            <g class="sketch-blocks" filter="url(#rough-line)">
+              <rect class="sketch-blue" x="91" y="91" width="117" height="39" rx="3" />
+              <rect class="sketch-orange" x="226" y="88" width="191" height="43" rx="3" />
+              <rect class="sketch-purple" x="151" y="197" width="153" height="39" rx="3" />
+              <rect class="sketch-teal" x="340" y="194" width="92" height="42" rx="3" />
+            </g>
+            <g class="sketch-dependencies" filter="url(#rough-line)">
+              <path d="M207 132 C216 158 233 173 251 195" />
+              <path d="M304 196 C323 176 335 155 345 132" />
+              <path d="M418 132 C427 151 425 173 408 193" />
+            </g>
+            <path class="sketch-pencil" d="M450 65 C464 55 479 53 490 61 C499 68 498 79 489 86" filter="url(#rough-line)" />
+          </svg>
+        </div>
+      </section>
+      <section class="primer-shell">
+        <div class="trace-primer wrap">
+          <div class="primer-intro">
+            <p class="eyebrow">A quick note on traces</p>
+            <h2>What is a training trace?</h2>
+            <p>When you profile a training run, you record the work done by the CPU and GPUs and how long it takes. That includes kernel launches, GPU kernels, memory copies, collectives, and synchronization.</p>
+            <p>A trace lays those events out over time. Each row represents an execution context, such as a CUDA compute stream or communication stream. Reading from left to right shows what ran, what waited, and what overlapped.</p>
+          </div>
+          <div class="primer-concepts">
+            <article><span>Block</span><p>A rectangle represents one operation or a small group of operations. Its position shows when it started; its width shows how long it ran.</p></article>
+            <article><span>Dependency</span><p>Operations do not run just because they appear next in the Python code. They wait for their inputs, parameters, and any required communication.</p></article>
+            <article><span>Overlap</span><p>Work on separate streams may run at the same time. If communication continues after useful compute ends, it remains on the critical path.</p></article>
+          </div>
+          <p class="primer-goal">Place operations in the order they can run. Work out what is ready, what is waiting, and what can overlap.</p>
+        </div>
+      </section>
+      <section class="catalog wrap" id="challenges">
+        <div class="section-heading">
+          <div><p class="eyebrow">Challenge library</p><h2>Build, compare, explain</h2></div>
+        </div>
+        <nav class="catalog-contents" aria-label="Challenge contents">
+          <div><span>Contents</span><small>Jump to a section</small></div>
+          <div class="catalog-contents-links" data-contents-links></div>
+        </nav>
+        <details class="chapter-panel collective-catalog" id="collective-primer" data-chapter-panel="collectives" open>
+          <summary class="chapter-heading">
+            <div><span>Interactive primer</span><h3>Move the tensors</h3><p>Build the output of common collectives across four ranks before reasoning about them inside a trace.</p></div>
+            <small data-collective-count></small>
+          </summary>
+          <div class="chapter-content">
+            <div class="collective-grid" data-collective-grid></div>
+          </div>
+        </details>
+        <details class="chapter-panel" id="build-trace" data-chapter-panel="build" open>
+          <summary class="chapter-heading">
+            <div><span>Chapter 1</span><h3>Build the trace</h3><p>Reconstruct execution order from individual operations and collectives.</p></div>
+            <small data-build-count></small>
+          </summary>
+          <div class="chapter-content">
+            <div class="filter-bar"><span>Filter by concept</span><div class="filter-row" role="group" aria-label="Filter trace-building challenges"></div></div>
+            <div class="task-grid"></div>
+          </div>
+        </details>
+        <details class="chapter-panel comparison-catalog" id="explain-trace" data-chapter-panel="compare" open>
+          <summary class="chapter-heading">
+            <div><span>Chapter 2</span><h3>Explain the trace</h3><p>Compare completed schedules and identify the dependencies that placed each block.</p></div>
+            <small data-comparison-count></small>
+          </summary>
+          <div class="chapter-content">
+            <div class="comparison-groups" data-comparison-grid></div>
+          </div>
+        </details>
+      </section>
+      <footer class="home-footer">
+        <div class="wrap home-footer-inner">
+          <div><strong>Build Your Trace</strong><p>Execution-order exercises for distributed LLM training.</p></div>
+          <nav aria-label="Footer navigation"><a class="github-footer-link" data-github-link hidden target="_blank" rel="noopener noreferrer"><span aria-hidden="true">☆</span> <span data-github-label>Star on GitHub</span> ↗</a><button data-scroll-top type="button">Back to top ↑</button><button data-method-open type="button">Timing model</button></nav>
+        </div>
+      </footer>
+    </template>
+
+    <template id="collective-template">
+      <div class="collective-page">
+        <header class="collective-header wrap">
+          <a href="#/" class="back-link">← All challenges</a>
+          <div class="collective-title-row">
+            <div><p class="eyebrow" data-collective-kicker></p><h1 data-collective-title></h1><p data-collective-summary></p></div>
+            <div class="collective-progress" data-collective-progress></div>
+          </div>
+        </header>
+        <main class="collective-main wrap">
+          <section class="collective-briefing">
+            <div><span class="brief-section-label">Your task</span><p data-collective-instruction></p></div>
+            <div class="concept-card"><span>Keep in mind</span><p data-collective-insight></p></div>
+          </section>
+          <section class="collective-board" aria-label="Collective tensor exercise">
+            <div class="collective-stage">
+              <div class="collective-stage-heading"><span>Before the collective</span><small>Inputs</small></div>
+              <div class="collective-ranks" data-collective-inputs></div>
+            </div>
+            <div class="collective-operation" aria-hidden="true"><span>Collective</span><i>↓</i></div>
+            <div class="collective-stage">
+              <div class="collective-stage-heading"><span>After the collective</span><small>Outputs</small></div>
+              <div class="collective-ranks" data-collective-outputs></div>
+            </div>
+          </section>
+          <section class="collective-palette-shell">
+            <div class="collective-palette-heading"><div><p class="eyebrow">Result chunks</p><h2>Drag a chunk, or tap it and choose a slot</h2></div><button class="text-button" type="button" data-collective-reset>Reset</button></div>
+            <div class="collective-palette" data-collective-palette></div>
+          </section>
+          <section class="collective-actions">
+            <div class="collective-feedback" data-collective-feedback aria-live="polite"></div>
+            <div><a class="secondary-button" data-collective-next hidden></a><button class="primary-button" type="button" data-collective-check disabled>Check result <span>→</span></button></div>
+          </section>
+        </main>
+      </div>
+    </template>
+
+    <template id="game-template">
+      <div class="game-page">
+        <aside class="brief-panel">
+          <div class="brief-panel-header">
+            <a class="back-link" href="#/">← All challenges</a>
+            <button class="brief-toggle" type="button" data-brief-toggle aria-expanded="true" aria-controls="task-brief-content" aria-label="Collapse task brief">‹</button>
+          </div>
+          <div class="brief-rail" aria-hidden="true"><span>Task brief</span></div>
+          <div class="brief-scroll" id="task-brief-content">
+            <p class="eyebrow" data-task-kicker></p>
+            <h1 data-task-title></h1>
+            <div class="task-facts"></div>
+            <section class="brief-section"><span class="brief-section-label">Your task</span><p data-task-objective></p></section>
+            <div class="concept-card"><span>Key idea</span><p data-task-insight></p></div>
+            <details class="teaching-details"><summary>Dependencies to watch</summary><div data-task-teaching-points></div></details>
+            <details class="hint-box">
+              <summary>Hint</summary>
+              <p data-task-hint></p>
+              <div data-task-implementation></div>
+            </details>
+            <button class="mobile-start-button" data-start-task type="button">Open the trace <span>↓</span></button>
+          </div>
+        </aside>
+        <section class="workspace">
+          <div class="workspace-topbar">
+            <div><p class="eyebrow">Your timeline</p><h2>Arrange the execution trace</h2></div>
+            <div class="progress-pill"><div><small>Progress</small><strong><span data-placed-count>0</span>/<span data-block-count></span></strong></div><i aria-hidden="true"><span></span></i></div>
+          </div>
+          <div class="timeline-shell">
+            <div class="result-banner" data-result-banner hidden>
+              <strong data-result-label></strong>
+              <p class="status-message" data-status aria-live="polite"></p>
+            </div>
+            <section class="completion-debrief" data-completion-debrief hidden>
+              <div class="debrief-heading"><span data-debrief-kicker>Completion debrief</span><strong>Why this schedule</strong></div>
+              <div class="debrief-content">
+                <div class="debrief-steps" data-debrief-steps role="tablist" aria-label="Trace dependencies"></div>
+                <p data-debrief-explanation></p>
+              </div>
+            </section>
+            <div class="timeline-toolbar">
+              <div class="timeline-toolbar-controls">
+                <div class="variant-picker" data-variant-picker aria-label="Trace topology"></div>
+                <div class="timeline-view-tools">
+                  <div class="timeline-zoom" aria-label="Timeline zoom">
+                    <button type="button" data-zoom-fit>Fit</button><button type="button" data-zoom-out aria-label="Zoom out">−</button><span data-zoom-level>100%</span><button type="button" data-zoom-in aria-label="Zoom in">+</button>
+                  </div>
+                  <button class="focus-button" type="button" data-focus-mode aria-pressed="false"><span class="focus-icon" aria-hidden="true"></span><span data-focus-label>Focus</span></button>
+                </div>
+              </div>
+              <div class="timeline-toolbar-key">
+                <div class="legend" data-legend></div>
+                <div class="scale-label">Width ∝ duration · <span data-timing-source></span></div>
+              </div>
+            </div>
+            <div class="timeline-scroll">
+              <div class="timeline" data-timeline></div>
+            </div>
+          </div>
+          <div class="palette-shell">
+            <div class="palette-heading"><div><p class="eyebrow">Event palette</p><h3>Drag or tap a block, then choose a slot</h3></div><div class="palette-tools"><button class="text-button solution-button" type="button" data-show-final>Reveal solution</button><button class="text-button" type="button" data-reset>Reset</button></div></div>
+            <div class="palette-groups" data-palette-groups aria-label="Event groups"></div>
+            <div class="palette" data-palette></div>
+          </div>
+          <div class="game-actions">
+            <div class="action-buttons">
+              <a class="secondary-button" data-next hidden>Next challenge <span>→</span></a>
+              <button class="primary-button" type="button" data-check disabled>Check progress <span>→</span></button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </template>
+
+    <template id="comparison-template">
+      <div class="comparison-page">
+        <header class="comparison-header wrap">
+          <a href="#/" class="back-link">← All challenges</a>
+          <div class="comparison-title-row">
+            <div>
+              <p class="eyebrow" data-comparison-kicker></p>
+              <h1 data-comparison-title></h1>
+              <p data-comparison-summary></p>
+              <div class="comparison-tags" data-comparison-tags></div>
+            </div>
+            <div class="comparison-progress" data-comparison-progress></div>
+          </div>
+        </header>
+        <main class="comparison-main wrap">
+          <section class="comparison-intro">
+            <div><p data-comparison-intro></p><nav class="comparison-prerequisites" data-comparison-prerequisites aria-label="Recommended trace builds"></nav></div>
+            <aside data-comparison-caveat></aside>
+          </section>
+          <section class="dependency-question" data-dependency-question>
+            <div class="question-count" data-question-count></div>
+            <h2 data-question-prompt></h2>
+            <p class="question-instruction" data-question-instruction></p>
+            <div class="question-options" data-question-options hidden></div>
+            <div class="question-feedback" data-question-feedback aria-live="polite"></div>
+            <div class="question-actions">
+              <a class="secondary-button" data-comparison-next-lab hidden>Next lab <span>→</span></a>
+              <a class="secondary-button" href="#/" data-comparison-done hidden>Challenge library <span>→</span></a>
+              <button class="secondary-button" type="button" data-question-next hidden>Next question <span>→</span></button>
+              <button class="primary-button" type="button" data-question-check disabled>Check dependency <span>→</span></button>
+            </div>
+          </section>
+          <section class="trace-pair" data-trace-pair></section>
+        </main>
+      </div>
+    </template>
+
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>

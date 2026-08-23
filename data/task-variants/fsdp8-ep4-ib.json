@@ -1,0 +1,293 @@
+{
+  "taskId": "fsdp-moe-ep",
+  "variant": {
+    "id": "ib",
+    "label": "Modeled IB",
+    "taskOverrides": {
+      "topology": "Dense FSDP=8 cross-node · expert FSDP=2 cross-node · EP=4 intra-node",
+      "scope": "Complete forward + loss + backward · analytical NDR400 FSDP",
+      "totalMs": 141.389,
+      "pxPerMs": 25,
+      "description": [
+        "This analytical variant keeps measured compute and intra-node EP durations but moves every FSDP all-gather and reduce-scatter onto cross-node NDR400 InfiniBand.",
+        "Each GPU/rank is assigned one 400 Gb/s rail. The node has eight rails (400 GB/s aggregate peak), but each simultaneous FSDP rank is modeled at 50 GB/s peak and 42.5 GB/s effective—not 400 GB/s per rank.",
+        "Collective duration uses total FSDP bytes × (ranks−1)/ranks ÷ 42.5 GB/s + 50 µs. This is a reviewable lower-order model, not a multi-node measurement."
+      ],
+      "insight": "Cross-node expert FSDP is communication-bound. Each FP32 expert reduce-scatter moves twice the bytes of its BF16 all-gather."
+    },
+    "verification": {
+      "status": "modeled",
+      "label": "Analytical NDR400 model · 42.5 GB/s effective per rank",
+      "implementation": "Measured NVLink compute/EP baseline with byte-derived cross-node FSDP collectives",
+      "workload": "Same Qwen3 shapes; EP=4 remains intra-node; dense FSDP=8 and expert FSDP=2 cross nodes.",
+      "measurement": "141.389 ms modeled collective window. 400 Gb/s = 50 GB/s peak per GPU rail; 85% efficiency gives 42.5 GB/s effective."
+    },
+    "model": {
+      "peakGbpsPerRank": 400,
+      "peakGBsPerRank": 50,
+      "effectiveGBsPerRank": 42.5,
+      "railsPerNode": 8,
+      "aggregatePeakGBsPerNode": 400,
+      "latencyUsPerCollective": 50,
+      "formula": "time = total_bytes × (ranks - 1) / ranks / effective_bytes_per_second + latency",
+      "durationsMs": {
+        "denseAllGather": 3.008,
+        "expertAllGather": 14.261,
+        "denseReduceScatterFp32": 5.966,
+        "expertReduceScatterFp32": 28.473
+      }
+    },
+    "blockOverrides": {
+      "embedding-fwd-ag": {
+        "startMs": 0,
+        "durationMs": 0.093,
+        "description": "Materialize the sharded token embedding before its lookup. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer0-dense-ag": {
+        "startMs": 0.541,
+        "durationMs": 3.008,
+        "description": "Embedding completion explicitly prefetches the layer 0 attention and router parameters. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "embedding-fwd": {
+        "startMs": 0.132
+      },
+      "layer0-expert-ag": {
+        "startMs": 4.316,
+        "durationMs": 14.261,
+        "description": "Materialize layer 0 experts before any layer 1 parameter collective is allowed onto the FSDP stream. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer0-attn-fwd": {
+        "startMs": 4.757
+      },
+      "layer1-dense-ag": {
+        "startMs": 18.579,
+        "durationMs": 3.008,
+        "description": "Starts only after the layer 0 expert all-gather completes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer1-expert-ag-prefetch": {
+        "startMs": 21.644,
+        "durationMs": 14.261,
+        "description": "Prefetch layer 1 experts while layer 0 routes and exchanges tokens. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer0-router-fwd": {
+        "startMs": 8.413
+      },
+      "layer0-dispatch-pack": {
+        "startMs": 8.819
+      },
+      "layer0-expert-copyout": {
+        "startMs": 18.589
+      },
+      "layer0-dispatch-meta": {
+        "startMs": 19.595
+      },
+      "layer0-dispatch": {
+        "startMs": 19.864
+      },
+      "layer0-permute": {
+        "startMs": 21.446
+      },
+      "layer0-swiglu-fwd": {
+        "startMs": 21.841
+      },
+      "layer0-unpermute": {
+        "startMs": 24.54
+      },
+      "layer0-combine": {
+        "startMs": 25.192
+      },
+      "layer0-restore": {
+        "startMs": 25.803
+      },
+      "output-ag-host-gate": {
+        "hidden": true,
+        "description": "No NCCL kernel is queued here. The CPU must finish the L0 forward control path, including EP synchronization points, and enter L1 pre-forward before it launches the final norm/output prefetch. This is launch timing, not a GPU data dependency. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "output-forward-ag": {
+        "startMs": 35.905,
+        "durationMs": 0.093,
+        "description": "This small root-parameter AG is queued behind the long L1 expert prefetch on the serialized FSDP stream; its own IB payload is only about 1.8 MB per rank.",
+        "callout": true
+      },
+      "layer1-attn-fwd": {
+        "startMs": 27.649
+      },
+      "layer1-router-fwd": {
+        "startMs": 29.673
+      },
+      "layer1-dispatch-pack": {
+        "startMs": 29.953
+      },
+      "layer1-expert-copyout": {
+        "startMs": 35.917
+      },
+      "layer1-dispatch-meta": {
+        "startMs": 36.753
+      },
+      "layer1-dispatch": {
+        "startMs": 37.001
+      },
+      "layer1-permute": {
+        "startMs": 37.664
+      },
+      "layer1-swiglu-fwd": {
+        "startMs": 38.06
+      },
+      "layer1-unpermute": {
+        "startMs": 39.952
+      },
+      "layer1-combine": {
+        "startMs": 40.599
+      },
+      "layer1-restore": {
+        "startMs": 41.272
+      },
+      "output-loss": {
+        "startMs": 42.941
+      },
+      "output-loss-bwd": {
+        "startMs": 43.2
+      },
+      "layer1-bwd-dense-ag": {
+        "startMs": 43.08,
+        "durationMs": 3.008,
+        "description": "The output module prefetches the last layer's dense parameters first. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "output-rs": {
+        "startMs": 44.034,
+        "durationMs": 0.137,
+        "description": "Shard the root FSDP state's gradients. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer1-expert-bwd-ag": {
+        "startMs": 46.914,
+        "durationMs": 14.261,
+        "description": "Materialize layer 1 experts before any layer 0 backward prefetch. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer1-dense-bwd-copyout": {
+        "startMs": 46.113
+      },
+      "layer1-token-combine-bwd": {
+        "startMs": 46.273
+      },
+      "layer1-expert-bwd-wait": {
+        "startMs": 50.246,
+        "durationMs": 10.945
+      },
+      "layer1-expert-bwd-copyout": {
+        "startMs": 61.191
+      },
+      "layer0-bwd-dense-ag": {
+        "startMs": 61.179,
+        "durationMs": 3.008,
+        "description": "Starts only after layer 1 expert materialization completes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer0-expert-bwd-prefetch": {
+        "startMs": 64.19,
+        "durationMs": 14.261,
+        "description": "Prefetch the next backward layer's experts while layer 1 expert backward runs. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer1-dy-a2a": {
+        "startMs": 62.183
+      },
+      "layer1-unpermute-bwd": {
+        "startMs": 63.414
+      },
+      "layer1-swiglu-bwd": {
+        "startMs": 64.04
+      },
+      "layer1-permute-bwd": {
+        "startMs": 68.855
+      },
+      "layer1-dx-a2a": {
+        "startMs": 69.622
+      },
+      "layer1-expert-grad-pack": {
+        "startMs": 70.456
+      },
+      "layer1-expert-rs": {
+        "startMs": 72.352,
+        "durationMs": 28.473,
+        "description": "The first part overlaps L1 router and attention backward, but most of the 28.473 ms FP32 expert RS remains exposed after L1 compute finishes."
+      },
+      "layer1-route-bwd": {
+        "startMs": 72.366
+      },
+      "layer1-router-bwd": {
+        "startMs": 73.01
+      },
+      "layer1-attn-bwd": {
+        "startMs": 73.541
+      },
+      "layer1-dense-grad-pack": {
+        "startMs": 78.638
+      },
+      "layer1-dense-rs": {
+        "startMs": 100.825,
+        "durationMs": 5.966,
+        "description": "The L1 dense RS cannot start until the preceding expert RS releases the serialized reduction stream."
+      },
+      "layer0-dense-bwd-copyout": {
+        "startMs": 78.886
+      },
+      "layer0-token-combine-bwd": {
+        "startMs": 79.014
+      },
+      "embedding-bwd-ag": {
+        "startMs": 79.825,
+        "durationMs": 0.093,
+        "description": "Prefetch embedding parameters for the final backward module. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "layer0-expert-bwd-copyout": {
+        "startMs": 81.189
+      },
+      "layer0-dy-a2a": {
+        "startMs": 82.023
+      },
+      "layer0-unpermute-bwd": {
+        "startMs": 82.739
+      },
+      "layer0-swiglu-bwd": {
+        "startMs": 83.205
+      },
+      "layer0-permute-bwd": {
+        "startMs": 87.397
+      },
+      "layer0-dx-a2a": {
+        "startMs": 88.144
+      },
+      "layer0-expert-grad-pack": {
+        "startMs": 89.019
+      },
+      "layer0-expert-rs": {
+        "startMs": 106.791,
+        "durationMs": 28.473,
+        "description": "L0 expert gradients are ready earlier, but this 28.473 ms RS waits behind both L1 reductions and becomes an exposed communication tail."
+      },
+      "layer0-route-bwd": {
+        "startMs": 90.927
+      },
+      "layer0-router-bwd": {
+        "startMs": 91.587
+      },
+      "layer0-attn-bwd": {
+        "startMs": 92.062
+      },
+      "layer0-dense-grad-pack": {
+        "startMs": 97.366
+      },
+      "layer0-dense-rs": {
+        "startMs": 135.264,
+        "durationMs": 5.966,
+        "description": "The L0 dense RS is serialized behind the long L0 expert RS after compute has completed."
+      },
+      "embedding-bwd": {
+        "startMs": 97.613
+      },
+      "embedding-rs": {
+        "startMs": 141.253,
+        "durationMs": 0.136,
+        "description": "The final small embedding RS waits for all earlier FSDP reductions; it ends the modeled forward-loss-backward window."
+      }
+    }
+  }
+}

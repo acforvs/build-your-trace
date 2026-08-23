@@ -1,0 +1,14 @@
+{
+  "name": "build-your-trace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node server.mjs",
+    "build:static": "node tools/build-static.mjs",
+    "precheck": "node tools/validate-content.mjs && python3 benchmarks/launch.py validate",
+    "check": "node --check src/app.js && python3 tools/check-python-syntax.py",
+    "check:release": "node tools/check-release.mjs",
+    "benchmark:list": "python3 benchmarks/launch.py list"
+  }
+}

@@ -1,0 +1,202 @@
+{
+  "id": "tensor-parallel-async",
+  "order": 9,
+  "section": "III · Tensor parallelism",
+  "category": "Tensor Parallel",
+  "resourceIds": [
+    "async-tp",
+    "torchtitan",
+    "ultrascale"
+  ],
+  "title": "Async TP: pipeline SwiGLU gather",
+  "difficulty": 4,
+  "topology": "Async TP=4 + SP · 4×H100 NVSwitch",
+  "scope": "Measured L0 SwiGLU gate/up micro-pipeline",
+  "timelineMode": "absolute",
+  "totalMs": 0.703264,
+  "pxPerMs": 2500,
+  "gridSegments": 10,
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan async TP · rank 0 CUDA/P2P streams",
+    "implementation": "TorchTitan v0.2.0 async tensor parallelism with TorchInductor micro-pipeline TP and symmetric memory",
+    "workload": "Two dense Qwen-shaped layers, hidden 4096, SwiGLU 12288, sequence 4096, BF16, TP=4+SP; displayed scope is L0 gate/up",
+    "measurement": "23.412 ms full step; 0.703 ms displayed L0 MLP norm-through-activation window",
+    "timeline": "Exact rank-0 Nsight kernel and peer-copy timestamps, shifted to the L0 MLP RMSNorm origin."
+  },
+  "description": [
+    "Async TP decomposes an activation all-gather followed by a matmul into peer fetches and rank-local sub-GEMMs. TorchInductor alternates two symmetric CUDA streams so one stream can compute while the other stream fetches or computes another rank chunk.",
+    "Build the four measured gate/up chunk envelopes and three peer-to-peer copies. Each compute envelope contains the gate and up projection work for one gathered token chunk; copy-engine transfers are shown on their own lane.",
+    "This trace proves overlap, not speedup. For this exact Qwen TP=4 graph, the full async step measured 23.412 ms versus 18.262 ms synchronously: matmul decomposition, barriers, and skipped matmul→reduce-scatter fusion outweighed the hidden copies."
+  ],
+  "tracks": [
+    {
+      "id": "stream-a",
+      "label": "Async TP compute A",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "stream-b",
+      "label": "Async TP compute B",
+      "subtitle": "Rank 0 · CUDA stream 27"
+    },
+    {
+      "id": "p2p",
+      "label": "Peer activation fetch",
+      "subtitle": "Rank 0 · P2P memcpy"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "mlp-norm",
+      "label": "Fixed context: sequence-parallel MLP RMSNorm",
+      "shortLabel": "MLP RMSNorm",
+      "type": "mlp",
+      "startMs": 0,
+      "durationMs": 0.009504,
+      "track": "stream-a",
+      "fixed": true
+    },
+    {
+      "id": "setup",
+      "label": "Fixed context: symmetric-buffer setup and initial synchronization",
+      "shortLabel": "Symmetric setup",
+      "type": "bubble",
+      "startMs": 0.010592,
+      "durationMs": 0.317824,
+      "track": "stream-a",
+      "fixed": true,
+      "description": "Measured setup/barrier envelope before the first gate/up chunk. It is overhead, not useful GEMM work."
+    },
+    {
+      "id": "chunk-0",
+      "label": "Local gate/up sub-GEMMs for chunk 0",
+      "shortLabel": "Chunk 0 GEMMs",
+      "type": "mlp",
+      "startMs": 0.328416,
+      "durationMs": 0.111072,
+      "track": "stream-a",
+      "description": "Gate and up projection sub-GEMMs for the local token chunk on stream A."
+    },
+    {
+      "id": "fetch-1",
+      "label": "Fetch rank 1 activation chunk",
+      "shortLabel": "P2P r1",
+      "type": "collective",
+      "startMs": 0.332704,
+      "durationMs": 0.025728,
+      "track": "p2p",
+      "description": "8 MiB peer-to-peer cudaMemcpyAsync over NVSwitch; overlaps chunk 0 compute."
+    },
+    {
+      "id": "chunk-1",
+      "label": "Gate/up sub-GEMMs for rank 1 chunk",
+      "shortLabel": "Chunk 1 GEMMs",
+      "type": "mlp",
+      "startMs": 0.362368,
+      "durationMs": 0.111328,
+      "track": "stream-b"
+    },
+    {
+      "id": "fetch-2",
+      "label": "Fetch rank 2 activation chunk",
+      "shortLabel": "P2P r2",
+      "type": "collective",
+      "startMs": 0.444992,
+      "durationMs": 0.026208,
+      "track": "p2p",
+      "description": "8 MiB peer-to-peer transfer overlapping the tail of chunk 1 compute."
+    },
+    {
+      "id": "chunk-2",
+      "label": "Gate/up sub-GEMMs for rank 2 chunk",
+      "shortLabel": "Chunk 2 GEMMs",
+      "type": "mlp",
+      "startMs": 0.477376,
+      "durationMs": 0.1056,
+      "track": "stream-a"
+    },
+    {
+      "id": "fetch-3",
+      "label": "Fetch rank 3 activation chunk",
+      "shortLabel": "P2P r3",
+      "type": "collective",
+      "startMs": 0.477792,
+      "durationMs": 0.026496,
+      "track": "p2p",
+      "description": "Final 8 MiB peer transfer starts with chunk 2 compute."
+    },
+    {
+      "id": "chunk-3",
+      "label": "Gate/up sub-GEMMs for rank 3 chunk",
+      "shortLabel": "Chunk 3 GEMMs",
+      "type": "mlp",
+      "startMs": 0.509664,
+      "durationMs": 0.105856,
+      "track": "stream-b"
+    },
+    {
+      "id": "join",
+      "label": "Fixed context: micro-pipeline join",
+      "shortLabel": "Join",
+      "type": "bubble",
+      "startMs": 0.619296,
+      "durationMs": 0.058752,
+      "track": "stream-a",
+      "fixed": true
+    },
+    {
+      "id": "activation",
+      "label": "Fixed context: SwiGLU activation and multiply",
+      "shortLabel": "SiLU × up",
+      "type": "mlp",
+      "startMs": 0.680352,
+      "durationMs": 0.022912,
+      "track": "stream-a",
+      "fixed": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "chunks",
+      "label": "Alternating gate/up chunks",
+      "blockIds": [
+        "chunk-0",
+        "chunk-1",
+        "chunk-2",
+        "chunk-3"
+      ]
+    },
+    {
+      "id": "fetches",
+      "label": "Peer activation fetches",
+      "blockIds": [
+        "fetch-1",
+        "fetch-2",
+        "fetch-3"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "mlp",
+      "weight": 1
+    },
+    {
+      "type": "collective",
+      "weight": 0.3
+    },
+    {
+      "type": "mlp",
+      "weight": 1
+    },
+    {
+      "type": "collective",
+      "weight": 0.3
+    },
+    {
+      "type": "mlp",
+      "weight": 1
+    }
+  ]
+}

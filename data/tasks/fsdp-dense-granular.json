@@ -1,0 +1,393 @@
+{
+  "id": "fsdp-dense-granular",
+  "order": 11,
+  "section": "IV · Sharding and overlap",
+  "category": "FSDP",
+  "resourceIds": [
+    "ultrascale",
+    "scaling-training",
+    "torchtitan"
+  ],
+  "title": "FSDP attention + MLP prefetch",
+  "difficulty": 4,
+  "topology": "FSDP=8 · 8×H100 · NVLink",
+  "scope": "2 dense Qwen-shaped layers · attention/MLP FSDP units",
+  "timelineMode": "absolute",
+  "totalMs": 31.874,
+  "pxPerMs": 50,
+  "gridSegments": 12,
+  "variants": [
+    {
+      "id": "nvlink",
+      "label": "Measured NVLink"
+    }
+  ],
+  "verification": {
+    "status": "measured",
+    "label": "Measured granular TorchTitan FSDP2 · rank 0 GPU streams",
+    "implementation": "TorchTitan v0.2.0 dense Qwen3 with attention+norm and MLP+norm as separate FSDP2 states",
+    "workload": "Two layers, hidden 4096, 64 Q heads, 4 KV heads, dense SwiGLU 12288, sequence 4096, BF16 parameters, FP32 gradient reduction, FSDP=8",
+    "measurement": "33.453 ms full captured step; 31.874 ms displayed window from L0 attention AG through final embedding RS",
+    "timeline": "Clean Nsight timing with direct FQN correlation and compute-stream kernel mapping from separate labeled captures."
+  },
+  "description": [
+    "This fresh TorchTitan capture wraps attention+attention norm and MLP+FFN norm as separate FSDP2 states. The explicit forward chain is L0 attention → L0 MLP → L1 attention → L1 MLP; backward reverses that chain.",
+    "The important backward benefit is precise: MLP gradients become complete first, so MLP reduce-scatter starts while attention backward is still running. Attention reduce-scatter starts only after attention gradients are packed, then overlaps the preceding layer's MLP backward.",
+    "Total communication bytes are nearly unchanged from whole-layer wrapping. Finer units improve when bytes become ready, at the cost of more collectives and launch latency. Root and embedding work remain fixed context."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "fsdp-ag",
+      "label": "FSDP parameter all-gather",
+      "subtitle": "Rank 0 · NCCL stream 28"
+    },
+    {
+      "id": "fsdp-rs",
+      "label": "FSDP gradient reduce-scatter",
+      "subtitle": "Rank 0 · NCCL stream 32"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "l0-attn-fwd-ag",
+      "label": "Layer 0 attention forward all-gather",
+      "shortLabel": "L0 Attn FWD AG",
+      "type": "collective",
+      "durationMs": 0.424736,
+      "startMs": 0,
+      "track": "fsdp-ag",
+      "description": "Materialize L0 attention and attention-norm parameters from eight FSDP shards."
+    },
+    {
+      "id": "l0-attn-fwd",
+      "label": "Layer 0 attention forward",
+      "shortLabel": "L0 Attention FWD",
+      "type": "attention",
+      "durationMs": 2.978783,
+      "startMs": 0.520896,
+      "track": "compute",
+      "description": "Attention parameter copy-out, norm, QKV, RoPE, Flash Attention, output projection, and residual."
+    },
+    {
+      "id": "l0-mlp-fwd-ag",
+      "label": "Prefetch layer 0 MLP forward parameters",
+      "shortLabel": "L0 MLP FWD AG",
+      "type": "collective",
+      "durationMs": 0.823968,
+      "startMs": 0.946144,
+      "track": "fsdp-ag",
+      "description": "L0 attention prefetches the separate dense SwiGLU FSDP state while attention computes."
+    },
+    {
+      "id": "l0-mlp-fwd",
+      "label": "Layer 0 dense SwiGLU forward",
+      "shortLabel": "L0 SwiGLU FWD",
+      "type": "mlp",
+      "durationMs": 2.426016,
+      "startMs": 3.499679,
+      "track": "compute",
+      "description": "MLP parameter copy-out, FFN norm, gate/up/down GEMMs, activation, and residual."
+    },
+    {
+      "id": "l1-attn-fwd-ag",
+      "label": "Prefetch layer 1 attention forward parameters",
+      "shortLabel": "L1 Attn FWD AG",
+      "type": "collective",
+      "durationMs": 0.769376,
+      "startMs": 3.354239,
+      "track": "fsdp-ag",
+      "description": "L0 MLP prefetches the next layer's attention state."
+    },
+    {
+      "id": "l1-mlp-fwd-ag",
+      "label": "Prefetch layer 1 MLP forward parameters",
+      "shortLabel": "L1 MLP FWD AG",
+      "type": "collective",
+      "durationMs": 0.9928,
+      "startMs": 4.428703,
+      "track": "fsdp-ag",
+      "description": "L1 attention prefetches its MLP state while earlier compute remains in flight."
+    },
+    {
+      "id": "l1-attn-fwd",
+      "label": "Layer 1 attention forward",
+      "shortLabel": "L1 Attention FWD",
+      "type": "attention",
+      "durationMs": 2.243904,
+      "startMs": 5.925695,
+      "track": "compute",
+      "description": "Layer 1 attention forward using its independently gathered state."
+    },
+    {
+      "id": "root-fwd-ag",
+      "label": "Fixed context: final norm and output all-gather",
+      "shortLabel": "Root output AG",
+      "type": "collective",
+      "durationMs": 0.076448,
+      "startMs": 6.372383,
+      "track": "fsdp-ag",
+      "description": "Prefetch the final norm/output state while layer 1 computes.",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-fwd",
+      "label": "Layer 1 dense SwiGLU forward",
+      "shortLabel": "L1 SwiGLU FWD",
+      "type": "mlp",
+      "durationMs": 2.002911,
+      "startMs": 8.169599,
+      "track": "compute",
+      "description": "Layer 1 dense MLP forward with its own FSDP state."
+    },
+    {
+      "id": "root-boundary",
+      "label": "Fixed context: final norm, output, loss, and root backward",
+      "shortLabel": "Output + Loss + Root BWD",
+      "type": "loss",
+      "durationMs": 1.11776,
+      "startMs": 10.17251,
+      "track": "compute",
+      "description": "Fixed root/loss context between layer forward and backward.",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-bwd-ag",
+      "label": "Layer 1 MLP backward all-gather",
+      "shortLabel": "L1 MLP BWD AG",
+      "type": "collective",
+      "durationMs": 1.004128,
+      "startMs": 10.275102,
+      "track": "fsdp-ag",
+      "description": "The root module reconstructs L1 MLP parameters first because MLP backward executes first."
+    },
+    {
+      "id": "root-rs",
+      "label": "Fixed context: final norm and output reduce-scatter",
+      "shortLabel": "Root RS",
+      "type": "collective",
+      "durationMs": 0.17696,
+      "startMs": 11.28291,
+      "track": "fsdp-rs",
+      "description": "Shard root gradients after root backward.",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-bwd",
+      "label": "Layer 1 dense SwiGLU backward",
+      "shortLabel": "L1 SwiGLU BWD",
+      "type": "mlp",
+      "durationMs": 4.422272,
+      "startMs": 11.29027,
+      "track": "compute",
+      "description": "Dense MLP backward ending with its separate flat-gradient pack."
+    },
+    {
+      "id": "l1-attn-bwd-ag",
+      "label": "Prefetch layer 1 attention backward parameters",
+      "shortLabel": "L1 Attn BWD AG",
+      "type": "collective",
+      "durationMs": 0.685344,
+      "startMs": 12.527646,
+      "track": "fsdp-ag",
+      "description": "L1 MLP backward prefetches L1 attention parameters."
+    },
+    {
+      "id": "l1-mlp-rs",
+      "label": "Layer 1 MLP gradient reduce-scatter",
+      "shortLabel": "L1 MLP RS",
+      "type": "collective",
+      "durationMs": 1.945535,
+      "startMs": 15.659262,
+      "track": "fsdp-rs",
+      "description": "Starts about 6 µs after L1 MLP gradient packing and overlaps L1 attention backward."
+    },
+    {
+      "id": "l1-attn-bwd",
+      "label": "Layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "durationMs": 5.313567,
+      "startMs": 15.712542,
+      "track": "compute",
+      "description": "Attention backward executes while the earlier MLP gradient RS is in flight, ending with attention gradient packing."
+    },
+    {
+      "id": "l0-mlp-bwd-ag",
+      "label": "Prefetch layer 0 MLP backward parameters",
+      "shortLabel": "L0 MLP BWD AG",
+      "type": "collective",
+      "durationMs": 1.298336,
+      "startMs": 18.232029,
+      "track": "fsdp-ag",
+      "description": "Triggered by the L1 attention pre-backward hook, not by completion of the L1 attention AG. The measured AG stream is therefore idle until autograd enters L1 attention backward."
+    },
+    {
+      "id": "l1-attn-rs",
+      "label": "Layer 1 attention gradient reduce-scatter",
+      "shortLabel": "L1 Attn RS",
+      "type": "collective",
+      "durationMs": 1.176,
+      "startMs": 20.973085,
+      "track": "fsdp-rs",
+      "description": "Starts after L1 attention gradient packing and overlaps L0 MLP backward."
+    },
+    {
+      "id": "l0-mlp-bwd",
+      "label": "Layer 0 dense SwiGLU backward",
+      "shortLabel": "L0 SwiGLU BWD",
+      "type": "mlp",
+      "durationMs": 4.666431,
+      "startMs": 21.026109,
+      "track": "compute",
+      "description": "Layer 0 MLP backward and separate gradient packing."
+    },
+    {
+      "id": "l0-attn-bwd-ag",
+      "label": "Prefetch layer 0 attention backward parameters",
+      "shortLabel": "L0 Attn BWD AG",
+      "type": "collective",
+      "durationMs": 0.661247,
+      "startMs": 22.499101,
+      "track": "fsdp-ag",
+      "description": "L0 MLP backward prefetches the final attention state."
+    },
+    {
+      "id": "l0-mlp-rs",
+      "label": "Layer 0 MLP gradient reduce-scatter",
+      "shortLabel": "L0 MLP RS",
+      "type": "collective",
+      "durationMs": 2.060192,
+      "startMs": 25.636508,
+      "track": "fsdp-rs",
+      "description": "Starts after L0 MLP packing and overlaps L0 attention backward."
+    },
+    {
+      "id": "l0-attn-bwd",
+      "label": "Layer 0 attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "durationMs": 4.962495,
+      "startMs": 25.69254,
+      "track": "compute",
+      "description": "Final layer attention backward and attention-gradient packing."
+    },
+    {
+      "id": "embedding-bwd-ag",
+      "label": "Fixed context: embedding backward all-gather",
+      "shortLabel": "Embedding BWD AG",
+      "type": "collective",
+      "durationMs": 0.425696,
+      "startMs": 28.192732,
+      "track": "fsdp-ag",
+      "description": "Prefetch embedding parameters outside the two-layer puzzle.",
+      "fixed": true
+    },
+    {
+      "id": "l0-attn-rs",
+      "label": "Layer 0 attention gradient reduce-scatter",
+      "shortLabel": "L0 Attn RS",
+      "type": "collective",
+      "durationMs": 1.183008,
+      "startMs": 30.623451,
+      "track": "fsdp-rs",
+      "description": "Shard L0 attention gradients after their flat-gradient pack."
+    },
+    {
+      "id": "embedding-boundary",
+      "label": "Fixed context: embedding backward",
+      "shortLabel": "… Embedding BWD",
+      "type": "bubble",
+      "durationMs": 0.242336,
+      "startMs": 30.655035,
+      "track": "compute",
+      "description": "Embedding gradient kernels execute while L0 attention RS runs.",
+      "fixed": true
+    },
+    {
+      "id": "embedding-rs",
+      "label": "Fixed context: embedding gradient reduce-scatter",
+      "shortLabel": "Embedding RS",
+      "type": "collective",
+      "durationMs": 0.041088,
+      "startMs": 31.833051,
+      "track": "fsdp-rs",
+      "description": "The final embedding RS closes the captured window.",
+      "fixed": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward",
+      "label": "Forward AG + compute",
+      "blockIds": [
+        "l0-attn-fwd-ag",
+        "l0-attn-fwd",
+        "l0-mlp-fwd-ag",
+        "l0-mlp-fwd",
+        "l1-attn-fwd-ag",
+        "l1-mlp-fwd-ag",
+        "l1-attn-fwd",
+        "l1-mlp-fwd"
+      ]
+    },
+    {
+      "id": "backward",
+      "label": "Backward AG + compute",
+      "blockIds": [
+        "l1-mlp-bwd-ag",
+        "l1-mlp-bwd",
+        "l1-attn-bwd-ag",
+        "l1-attn-bwd",
+        "l0-mlp-bwd-ag",
+        "l0-mlp-bwd",
+        "l0-attn-bwd-ag",
+        "l0-attn-bwd"
+      ]
+    },
+    {
+      "id": "gradient-sharding",
+      "label": "Submodule gradient RS",
+      "blockIds": [
+        "l1-mlp-rs",
+        "l1-attn-rs",
+        "l0-mlp-rs",
+        "l0-attn-rs"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "collective",
+      "weight": 0.42
+    },
+    {
+      "type": "attention",
+      "weight": 2.98
+    },
+    {
+      "type": "collective",
+      "weight": 0.82
+    },
+    {
+      "type": "mlp",
+      "weight": 2.43
+    },
+    {
+      "type": "collective",
+      "weight": 1.95
+    },
+    {
+      "type": "attention",
+      "weight": 5.31
+    },
+    {
+      "type": "collective",
+      "weight": 1.18
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "id": "moe-expert-parallel-backward",
+  "order": 4,
+  "section": "I · Execution fundamentals",
+  "category": "Expert Parallel",
+  "resourceIds": [
+    "moe",
+    "torchtitan",
+    "ultrascale"
+  ],
+  "title": "MoE + EP backward",
+  "difficulty": 3,
+  "topology": "EP=4 · 4×H100 NVSwitch",
+  "scope": "Measured layer 1 expert-backward window · FSDP prefetch excluded",
+  "timelineMode": "absolute",
+  "totalMs": 9.074,
+  "pxPerMs": 125,
+  "gridSegments": 9,
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan EP backward · rank 0",
+    "implementation": "TorchTitan v0.2.0 Qwen3 MoE expert-parallel autograd path",
+    "workload": "Batch 1 × 4096 tokens per rank; BF16; hidden 4096; 128 experts; top-8; expert hidden 1536; EP=4",
+    "measurement": "9.074 ms layer 1 expert-backward window from expert parameter copy-out through returned expert-input gradients",
+    "timeline": "Exact rank-0 offsets and durations cropped from the verified layer 1 backward path."
+  },
+  "description": [
+    "The window begins after the layer 1 expert all-gather. FSDP copy-out is fixed context; the puzzle covers only the activation-gradient path through EP and grouped expert backward.",
+    "Forward combine returns expert outputs to token owners. Its backward sends dY back to expert owners, matching the rank direction of forward dispatch. Forward dispatch's backward later returns dX to token owners, matching forward combine.",
+    "The local layout inverses remain necessary: unpermute backward recreates expert-major gradients before grouped expert backward, and permute backward prepares expert-input gradients for dX exchange."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "ep-a2a",
+      "label": "EP activation exchange",
+      "subtitle": "Rank 0 · NCCL stream 35"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "expert-copyout",
+      "label": "Fixed context: layer 1 expert parameter copy-out",
+      "shortLabel": "Expert weights ready",
+      "type": "routing",
+      "startMs": 0,
+      "durationMs": 0.988,
+      "track": "compute",
+      "fixed": true,
+      "description": "FSDP has completed outside this lesson; expose the gathered weights before grouped expert backward."
+    },
+    {
+      "id": "combine-bwd-dy",
+      "label": "Combine backward: dY all-to-all to expert owners",
+      "shortLabel": "dY to experts",
+      "type": "collective",
+      "startMs": 0.992,
+      "durationMs": 1.226,
+      "track": "ep-a2a",
+      "description": "The adjoint of forward combine follows the forward-dispatch rank direction."
+    },
+    {
+      "id": "unpermute-bwd",
+      "label": "Unpermute backward: recreate expert-major dY",
+      "shortLabel": "Unpermute BWD",
+      "type": "routing",
+      "startMs": 2.223,
+      "durationMs": 0.617,
+      "track": "compute"
+    },
+    {
+      "id": "experts-bwd",
+      "label": "Grouped SwiGLU backward: gradI and gradW",
+      "shortLabel": "Grouped SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 2.849,
+      "durationMs": 4.815,
+      "track": "compute"
+    },
+    {
+      "id": "permute-bwd",
+      "label": "Permute backward: restore dispatch layout for dX",
+      "shortLabel": "Permute BWD",
+      "type": "routing",
+      "startMs": 7.664,
+      "durationMs": 0.763,
+      "track": "compute"
+    },
+    {
+      "id": "dispatch-bwd-dx",
+      "label": "Dispatch backward: dX all-to-all to token owners",
+      "shortLabel": "dX to tokens",
+      "type": "collective",
+      "startMs": 8.431,
+      "durationMs": 0.643,
+      "track": "ep-a2a",
+      "description": "The adjoint of forward dispatch follows the forward-combine rank direction."
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "ownership",
+      "label": "Gradient ownership exchange",
+      "blockIds": [
+        "combine-bwd-dy",
+        "dispatch-bwd-dx"
+      ]
+    },
+    {
+      "id": "local-backward",
+      "label": "Local expert backward",
+      "blockIds": [
+        "unpermute-bwd",
+        "experts-bwd",
+        "permute-bwd"
+      ]
+    }
+  ]
+}

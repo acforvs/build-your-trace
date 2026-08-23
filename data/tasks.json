@@ -1,0 +1,1660 @@
+{
+  "social": {
+    "github": {
+      "enabled": false,
+      "url": "",
+      "label": "Star on GitHub",
+      "completionPrompt": "Found this useful? Star Build Your Trace on GitHub."
+    }
+  },
+  "assumptions": {
+    "hardware": {
+      "BF16 compute": {
+        "value": "990 TFLOP/s",
+        "note": "Dense, non-sparse H100 SXM roofline used for teaching estimates."
+      },
+      "HBM": {
+        "value": "3.35 TB/s",
+        "note": "Peak H100 SXM HBM3 bandwidth before efficiency factors."
+      },
+      "NVLink": {
+        "value": "400 GB/s",
+        "note": "Conservative effective collective bandwidth within one 8-GPU node."
+      },
+      "InfiniBand": {
+        "value": "50 GB/s",
+        "note": "One 400 Gb/s rail per GPU/rank before efficiency. Eight rails provide 400 GB/s aggregate per node, not per rank."
+      }
+    },
+    "workload": {
+      "Model": "Qwen3-235B-A22B: 94 layers, hidden size 4096, 64 query heads, 4 KV heads, 128 experts, top-8 routing.",
+      "Microbatch": "2 sequences × 4096 tokens unless a challenge says otherwise.",
+      "Precision": "BF16 parameters and activations; FP32 optimizer state is omitted from trace widths.",
+      "Efficiency": "70% tensor-core efficiency, 75% HBM efficiency, and explicit launch/collective latency floors."
+    },
+    "notes": [
+      "The bars are roofline teaching estimates, not benchmark claims. Real kernels depend on shapes, software, topology, contention, and fusion.",
+      "NVIDIA quotes 1,979 BF16 TFLOP/s with sparsity for H100 SXM; this game uses roughly half of that as the dense peak.",
+      "NVLink is shown at a conservative effective 400 GB/s even though aggregate bidirectional link peak is higher. InfiniBand uses 400 Gb/s = 50 GB/s.",
+      "Dense exercises use Qwen-shaped dimensions as a controlled surrogate. MoE exercises use the published Qwen3-235B-A22B expert configuration."
+    ]
+  },
+  "resources": {
+    "ultrascale": {
+      "label": "Hugging Face Ultra-Scale Playbook",
+      "url": "https://huggingface.co/spaces/nanotron/ultrascale-playbook"
+    },
+    "scaling-training": {
+      "label": "Scaling Book: distributed training",
+      "url": "https://jax-ml.github.io/scaling-book/training/"
+    },
+    "scaling-gpus": {
+      "label": "Scaling Book: GPU rooflines",
+      "url": "https://jax-ml.github.io/scaling-book/gpus/"
+    },
+    "moe": {
+      "label": "Hugging Face: Mixture of Experts explained",
+      "url": "https://huggingface.co/blog/moe"
+    },
+    "torchtitan": {
+      "label": "PyTorch TorchTitan: Qwen3 training implementation",
+      "url": "https://github.com/pytorch/torchtitan/tree/v0.2.0/torchtitan/models/qwen3"
+    },
+    "async-tp": {
+      "label": "PyTorch: Introducing Async Tensor Parallelism",
+      "url": "https://discuss.pytorch.org/t/distributed-w-torchtitan-introducing-async-tensor-parallelism-in-pytorch/209487"
+    },
+    "pytorch-cp-source": {
+      "label": "PyTorch: native context-parallel attention implementation",
+      "url": "https://github.com/pytorch/pytorch/blob/v2.9.1/torch/distributed/tensor/experimental/_attention.py"
+    },
+    "pytorch-ddp": {
+      "label": "PyTorch: DistributedDataParallel",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html"
+    }
+  },
+  "taskOverrideFiles": [
+    "data/task-overrides/single-gpu-forward-backward.json",
+    "data/task-overrides/single-gpu-moe.json",
+    "data/task-overrides/tensor-parallel-dense.json",
+    "data/task-overrides/tensor-sequence-parallel.json",
+    "data/task-overrides/fsdp-dense.json",
+    "data/task-overrides/fsdp-moe.json",
+    "data/task-overrides/fsdp8-ep4.json"
+  ],
+  "taskFiles": [
+    "data/tasks/moe-expert-parallel.json",
+    "data/tasks/moe-expert-parallel-backward.json",
+    "data/tasks/ddp-terminal.json",
+    "data/tasks/ddp-bucketed.json",
+    "data/tasks/fsdp-dense-granular.json",
+    "data/tasks/tensor-parallel-async.json",
+    "data/tasks/context-parallel-allgather.json",
+    "data/tasks/context-parallel-alltoall.json",
+    "data/tasks/context-parallel-multirank.json"
+  ],
+  "taskVariantFiles": [
+    "data/task-variants/fsdp-dense-ib.json",
+    "data/task-variants/fsdp-dense-granular-ib.json",
+    "data/task-variants/fsdp-moe-ib.json",
+    "data/task-variants/fsdp8-ep4-ib.json"
+  ],
+  "teachingFile": "data/teaching.json",
+  "comparisonFile": "data/comparisons.json",
+  "collectiveFile": "data/collectives.json",
+  "tasks": [
+    {
+      "id": "single-gpu-forward-backward",
+      "order": 1,
+      "section": "I · Execution fundamentals",
+      "category": "Foundations",
+      "resourceIds": [
+        "scaling-training"
+      ],
+      "title": "Single-GPU forward + backward",
+      "difficulty": 1,
+      "topology": "1× H100",
+      "scope": "1 layer",
+      "totalMs": 11.2,
+      "description": [
+        "Build the simplest training trace: a forward pass through attention and the feed-forward network, a scalar loss, then reverse-mode differentiation in the opposite order.",
+        "The backward kernels are wider because they compute activation gradients and weight gradients. The optimizer cannot run until all gradients exist."
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "CUDA stream 0"
+        }
+      ],
+      "phases": [
+        {
+          "id": "p1",
+          "label": "Forward A",
+          "durationMs": 2.4
+        },
+        {
+          "id": "p2",
+          "label": "Forward B",
+          "durationMs": 2.5
+        },
+        {
+          "id": "p3",
+          "label": "Loss",
+          "durationMs": 0.3
+        },
+        {
+          "id": "p4",
+          "label": "Backward B",
+          "durationMs": 3.5
+        },
+        {
+          "id": "p5",
+          "label": "Backward A",
+          "durationMs": 2
+        },
+        {
+          "id": "p6",
+          "label": "Update",
+          "durationMs": 0.5
+        }
+      ],
+      "blocks": [
+        {
+          "id": "attn-fwd",
+          "label": "Attention forward",
+          "type": "attention",
+          "durationMs": 2.4,
+          "track": "compute",
+          "phase": "p1"
+        },
+        {
+          "id": "mlp-fwd",
+          "label": "MLP forward",
+          "type": "mlp",
+          "durationMs": 2.5,
+          "track": "compute",
+          "phase": "p2"
+        },
+        {
+          "id": "loss",
+          "label": "Loss",
+          "type": "loss",
+          "durationMs": 0.3,
+          "track": "compute",
+          "phase": "p3"
+        },
+        {
+          "id": "mlp-bwd",
+          "label": "MLP backward",
+          "type": "mlp",
+          "durationMs": 3.5,
+          "track": "compute",
+          "phase": "p4"
+        },
+        {
+          "id": "attn-bwd",
+          "label": "Attention backward",
+          "type": "attention",
+          "durationMs": 2,
+          "track": "compute",
+          "phase": "p5"
+        },
+        {
+          "id": "optimizer",
+          "label": "Optimizer step",
+          "type": "optimizer",
+          "durationMs": 0.5,
+          "track": "compute",
+          "phase": "p6"
+        }
+      ],
+      "preview": [
+        {
+          "type": "attention",
+          "weight": 2.4
+        },
+        {
+          "type": "mlp",
+          "weight": 2.5
+        },
+        {
+          "type": "loss",
+          "weight": 0.3
+        },
+        {
+          "type": "mlp",
+          "weight": 3.5
+        },
+        {
+          "type": "attention",
+          "weight": 2
+        },
+        {
+          "type": "optimizer",
+          "weight": 0.5
+        }
+      ]
+    },
+    {
+      "id": "single-gpu-moe",
+      "order": 2,
+      "section": "I · Execution fundamentals",
+      "category": "MoE",
+      "resourceIds": [
+        "moe",
+        "ultrascale"
+      ],
+      "title": "MoE layer on one GPU",
+      "difficulty": 2,
+      "topology": "1× H100",
+      "scope": "1 MoE layer",
+      "totalMs": 14,
+      "description": [
+        "Replace the dense feed-forward network with Qwen3's sparse MoE path. Tokens are scored by the router, dispatched to eight selected experts, and combined before leaving the layer.",
+        "Even without inter-GPU communication, routing and permutation add memory-bound work around the expert GEMMs."
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "CUDA stream 0"
+        }
+      ],
+      "phases": [
+        {
+          "id": "p1",
+          "label": "Attention",
+          "durationMs": 2.4
+        },
+        {
+          "id": "p2",
+          "label": "Route",
+          "durationMs": 0.6
+        },
+        {
+          "id": "p3",
+          "label": "Dispatch",
+          "durationMs": 0.9
+        },
+        {
+          "id": "p4",
+          "label": "Experts",
+          "durationMs": 3
+        },
+        {
+          "id": "p5",
+          "label": "Combine",
+          "durationMs": 0.8
+        },
+        {
+          "id": "p6",
+          "label": "Loss",
+          "durationMs": 0.3
+        },
+        {
+          "id": "p7",
+          "label": "MoE backward",
+          "durationMs": 4.2
+        },
+        {
+          "id": "p8",
+          "label": "Attention backward",
+          "durationMs": 1.8
+        }
+      ],
+      "blocks": [
+        {
+          "id": "attn-fwd",
+          "label": "Attention forward",
+          "type": "attention",
+          "durationMs": 2.4,
+          "track": "compute",
+          "phase": "p1"
+        },
+        {
+          "id": "router",
+          "label": "Router + top-k",
+          "type": "routing",
+          "durationMs": 0.6,
+          "track": "compute",
+          "phase": "p2"
+        },
+        {
+          "id": "dispatch",
+          "label": "Token dispatch",
+          "type": "routing",
+          "durationMs": 0.9,
+          "track": "compute",
+          "phase": "p3"
+        },
+        {
+          "id": "experts-fwd",
+          "label": "Top-8 experts forward",
+          "type": "mlp",
+          "durationMs": 3,
+          "track": "compute",
+          "phase": "p4"
+        },
+        {
+          "id": "combine",
+          "label": "Expert combine",
+          "type": "routing",
+          "durationMs": 0.8,
+          "track": "compute",
+          "phase": "p5"
+        },
+        {
+          "id": "loss",
+          "label": "Loss",
+          "type": "loss",
+          "durationMs": 0.3,
+          "track": "compute",
+          "phase": "p6"
+        },
+        {
+          "id": "experts-bwd",
+          "label": "MoE backward",
+          "type": "mlp",
+          "durationMs": 4.2,
+          "track": "compute",
+          "phase": "p7"
+        },
+        {
+          "id": "attn-bwd",
+          "label": "Attention backward",
+          "type": "attention",
+          "durationMs": 1.8,
+          "track": "compute",
+          "phase": "p8"
+        }
+      ],
+      "preview": [
+        {
+          "type": "attention",
+          "weight": 2
+        },
+        {
+          "type": "routing",
+          "weight": 1
+        },
+        {
+          "type": "mlp",
+          "weight": 2.5
+        },
+        {
+          "type": "routing",
+          "weight": 1
+        },
+        {
+          "type": "mlp",
+          "weight": 3.5
+        },
+        {
+          "type": "attention",
+          "weight": 1.5
+        }
+      ]
+    },
+    {
+      "id": "tensor-parallel-dense",
+      "order": 7,
+      "section": "III · Tensor parallelism",
+      "category": "Tensor Parallel",
+      "resourceIds": [
+        "ultrascale",
+        "scaling-training"
+      ],
+      "title": "Tensor parallel dense layer",
+      "difficulty": 3,
+      "topology": "TP=8 · NVLink",
+      "scope": "1 dense surrogate layer",
+      "totalMs": 8.6,
+      "description": [
+        "Each GPU owns a shard of attention and MLP weights. Column-parallel projections produce sharded features; row-parallel outputs require a collective before the residual path is complete.",
+        "Use the communication lane to expose collectives that cannot disappear into the same dependent compute chain."
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "main stream"
+        },
+        {
+          "id": "comm",
+          "label": "Communication",
+          "subtitle": "NCCL stream"
+        }
+      ],
+      "phases": [
+        {
+          "id": "p1",
+          "label": "QKV + attention",
+          "durationMs": 1.6
+        },
+        {
+          "id": "p2",
+          "label": "Attention output",
+          "durationMs": 1.2
+        },
+        {
+          "id": "p3",
+          "label": "Attention sync",
+          "durationMs": 1
+        },
+        {
+          "id": "p4",
+          "label": "MLP up",
+          "durationMs": 1.5
+        },
+        {
+          "id": "p5",
+          "label": "MLP down",
+          "durationMs": 1.3
+        },
+        {
+          "id": "p6",
+          "label": "MLP sync",
+          "durationMs": 1.1
+        },
+        {
+          "id": "p7",
+          "label": "Backward",
+          "durationMs": 0.9
+        }
+      ],
+      "blocks": [
+        {
+          "id": "attn-shard",
+          "label": "Sharded QKV + FA",
+          "type": "attention",
+          "durationMs": 1.6,
+          "track": "compute",
+          "phase": "p1"
+        },
+        {
+          "id": "oproj",
+          "label": "Row-parallel O-proj",
+          "type": "attention",
+          "durationMs": 1.2,
+          "track": "compute",
+          "phase": "p2"
+        },
+        {
+          "id": "attn-rs",
+          "label": "Reduce-scatter",
+          "type": "collective",
+          "durationMs": 1,
+          "track": "comm",
+          "phase": "p3"
+        },
+        {
+          "id": "mlp-up",
+          "label": "Column-parallel MLP up",
+          "type": "mlp",
+          "durationMs": 1.5,
+          "track": "compute",
+          "phase": "p4"
+        },
+        {
+          "id": "mlp-down",
+          "label": "Row-parallel MLP down",
+          "type": "mlp",
+          "durationMs": 1.3,
+          "track": "compute",
+          "phase": "p5"
+        },
+        {
+          "id": "mlp-rs",
+          "label": "Reduce-scatter",
+          "type": "collective",
+          "durationMs": 1.1,
+          "track": "comm",
+          "phase": "p6"
+        },
+        {
+          "id": "grad-ag",
+          "label": "Input-grad all-gather",
+          "type": "collective",
+          "durationMs": 0.9,
+          "track": "comm",
+          "phase": "p7"
+        }
+      ],
+      "preview": [
+        {
+          "type": "attention",
+          "weight": 2.8
+        },
+        {
+          "type": "collective",
+          "weight": 1
+        },
+        {
+          "type": "mlp",
+          "weight": 2.8
+        },
+        {
+          "type": "collective",
+          "weight": 1.1
+        }
+      ]
+    },
+    {
+      "id": "tensor-sequence-parallel",
+      "order": 8,
+      "section": "III · Tensor parallelism",
+      "category": "Tensor Parallel",
+      "resourceIds": [
+        "ultrascale",
+        "scaling-training"
+      ],
+      "title": "Tensor + sequence parallel",
+      "difficulty": 3,
+      "topology": "TP=8 · SP · NVLink",
+      "scope": "1 dense surrogate layer",
+      "totalMs": 9.2,
+      "description": [
+        "Sequence parallel keeps residual, dropout, and normalization work sharded across tokens. Before tensor-parallel GEMMs that need the full token slice, activations are gathered; outputs are reduce-scattered back to the sequence partition.",
+        "Place the four collectives at the two boundaries created by attention and MLP."
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "main stream"
+        },
+        {
+          "id": "comm",
+          "label": "Communication",
+          "subtitle": "NCCL stream"
+        }
+      ],
+      "phases": [
+        {
+          "id": "p1",
+          "label": "Gather attention input",
+          "durationMs": 1
+        },
+        {
+          "id": "p2",
+          "label": "Attention",
+          "durationMs": 2.3
+        },
+        {
+          "id": "p3",
+          "label": "Shard attention output",
+          "durationMs": 1
+        },
+        {
+          "id": "p4",
+          "label": "Gather MLP input",
+          "durationMs": 1
+        },
+        {
+          "id": "p5",
+          "label": "MLP",
+          "durationMs": 2.8
+        },
+        {
+          "id": "p6",
+          "label": "Shard MLP output",
+          "durationMs": 1.1
+        }
+      ],
+      "blocks": [
+        {
+          "id": "attn-ag",
+          "label": "Activation all-gather",
+          "type": "collective",
+          "durationMs": 1,
+          "track": "comm",
+          "phase": "p1"
+        },
+        {
+          "id": "attn",
+          "label": "TP attention",
+          "type": "attention",
+          "durationMs": 2.3,
+          "track": "compute",
+          "phase": "p2"
+        },
+        {
+          "id": "attn-rs",
+          "label": "Activation reduce-scatter",
+          "type": "collective",
+          "durationMs": 1,
+          "track": "comm",
+          "phase": "p3"
+        },
+        {
+          "id": "mlp-ag",
+          "label": "Activation all-gather",
+          "type": "collective",
+          "durationMs": 1,
+          "track": "comm",
+          "phase": "p4"
+        },
+        {
+          "id": "mlp",
+          "label": "TP MLP",
+          "type": "mlp",
+          "durationMs": 2.8,
+          "track": "compute",
+          "phase": "p5"
+        },
+        {
+          "id": "mlp-rs",
+          "label": "Activation reduce-scatter",
+          "type": "collective",
+          "durationMs": 1.1,
+          "track": "comm",
+          "phase": "p6"
+        }
+      ],
+      "preview": [
+        {
+          "type": "collective",
+          "weight": 1
+        },
+        {
+          "type": "attention",
+          "weight": 2.3
+        },
+        {
+          "type": "collective",
+          "weight": 1
+        },
+        {
+          "type": "collective",
+          "weight": 1
+        },
+        {
+          "type": "mlp",
+          "weight": 2.8
+        },
+        {
+          "type": "collective",
+          "weight": 1.1
+        }
+      ]
+    },
+    {
+      "id": "fsdp-dense",
+      "order": 10,
+      "section": "IV · Sharding and overlap",
+      "category": "FSDP",
+      "resourceIds": [
+        "ultrascale",
+        "scaling-training",
+        "scaling-gpus"
+      ],
+      "title": "FSDP dense layer with prefetch",
+      "difficulty": 4,
+      "topology": "FSDP=8 · NVLink",
+      "scope": "2 dense surrogate layers",
+      "totalMs": 17,
+      "description": [
+        "FSDP stores only a shard of each layer's parameters. A layer must all-gather full weights before compute, then can release them. Backward reconstructs weights again and reduce-scatters gradients afterward.",
+        "Prefetch layer 2 while layer 1 computes. The all-gather is intentionally a little wider than the available compute window, leaving an exposed tail."
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "main stream"
+        },
+        {
+          "id": "comm",
+          "label": "Communication",
+          "subtitle": "NCCL stream"
+        }
+      ],
+      "phases": [
+        {
+          "id": "p1",
+          "label": "Materialize L1",
+          "durationMs": 3
+        },
+        {
+          "id": "p2",
+          "label": "L1 + prefetch L2",
+          "durationMs": 4
+        },
+        {
+          "id": "p3",
+          "label": "Exposed tail",
+          "durationMs": 1.2
+        },
+        {
+          "id": "p4",
+          "label": "Layer 2",
+          "durationMs": 4
+        },
+        {
+          "id": "p5",
+          "label": "Backward gather",
+          "durationMs": 2.8
+        },
+        {
+          "id": "p6",
+          "label": "Backward + grad shard",
+          "durationMs": 2
+        }
+      ],
+      "blocks": [
+        {
+          "id": "l1-ag",
+          "label": "L1 parameter all-gather",
+          "type": "collective",
+          "durationMs": 3,
+          "track": "comm",
+          "phase": "p1"
+        },
+        {
+          "id": "l1-fwd",
+          "label": "Layer 1 forward",
+          "type": "mlp",
+          "durationMs": 4,
+          "track": "compute",
+          "phase": "p2"
+        },
+        {
+          "id": "l2-prefetch",
+          "label": "L2 parameter all-gather",
+          "type": "collective",
+          "durationMs": 4,
+          "track": "comm",
+          "phase": "p2"
+        },
+        {
+          "id": "l2-tail",
+          "label": "All-gather tail",
+          "type": "collective",
+          "durationMs": 1.2,
+          "track": "comm",
+          "phase": "p3"
+        },
+        {
+          "id": "l2-fwd",
+          "label": "Layer 2 forward",
+          "type": "mlp",
+          "durationMs": 4,
+          "track": "compute",
+          "phase": "p4"
+        },
+        {
+          "id": "bwd-ag",
+          "label": "Backward parameter gather",
+          "type": "collective",
+          "durationMs": 2.8,
+          "track": "comm",
+          "phase": "p5"
+        },
+        {
+          "id": "bwd",
+          "label": "Layer backward",
+          "type": "mlp",
+          "durationMs": 2,
+          "track": "compute",
+          "phase": "p6"
+        },
+        {
+          "id": "grad-rs",
+          "label": "Gradient reduce-scatter",
+          "type": "collective",
+          "durationMs": 1.7,
+          "track": "comm",
+          "phase": "p6",
+          "offset": 15
+        }
+      ],
+      "preview": [
+        {
+          "type": "collective",
+          "weight": 3
+        },
+        {
+          "type": "mlp",
+          "weight": 4
+        },
+        {
+          "type": "collective",
+          "weight": 5.2
+        },
+        {
+          "type": "mlp",
+          "weight": 4
+        },
+        {
+          "type": "collective",
+          "weight": 2.8
+        }
+      ]
+    },
+    {
+      "id": "fsdp-moe",
+      "order": 7,
+      "section": "IV · Sharding and overlap",
+      "category": "FSDP",
+      "resourceIds": [
+        "moe",
+        "ultrascale",
+        "scaling-gpus"
+      ],
+      "title": "FSDP over a MoE layer",
+      "difficulty": 4,
+      "topology": "FSDP=8 · NVLink",
+      "scope": "1 full Qwen3 layer",
+      "totalMs": 24.6,
+      "description": [
+        "The attention path, loss, and final optimizer step are already fixed on the trace. Place the MoE-specific work and its FSDP communication around them.",
+        "Forward-prefetch starts the MoE parameter all-gather immediately after the attention parameter gather and overlaps it with attention compute. Because the expert parameter payload is larger, a tail remains exposed before routing. Backward performs the same lifecycle in reverse and prefetches attention parameters behind expert backward."
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "main stream"
+        },
+        {
+          "id": "comm",
+          "label": "Communication",
+          "subtitle": "NCCL stream"
+        }
+      ],
+      "phases": [
+        {
+          "id": "p1",
+          "label": "Attention parameters",
+          "durationMs": 2.6
+        },
+        {
+          "id": "p2",
+          "label": "Attention + MoE prefetch",
+          "durationMs": 5.4
+        },
+        {
+          "id": "p3",
+          "label": "Routing",
+          "durationMs": 0.7
+        },
+        {
+          "id": "p4",
+          "label": "Experts forward",
+          "durationMs": 3.2
+        },
+        {
+          "id": "p5",
+          "label": "Loss",
+          "durationMs": 0.3
+        },
+        {
+          "id": "p6",
+          "label": "MoE backward parameters",
+          "durationMs": 4.5
+        },
+        {
+          "id": "p7",
+          "label": "Experts backward + attention prefetch",
+          "durationMs": 4
+        },
+        {
+          "id": "p8",
+          "label": "Attention backward + expert gradient shard",
+          "durationMs": 2
+        },
+        {
+          "id": "p9",
+          "label": "Attention gradient shard",
+          "durationMs": 1.4
+        },
+        {
+          "id": "p10",
+          "label": "Optimizer",
+          "durationMs": 0.5
+        }
+      ],
+      "blocks": [
+        {
+          "id": "attn-param-ag",
+          "label": "Attention parameter all-gather",
+          "type": "collective",
+          "durationMs": 2.6,
+          "track": "comm",
+          "phase": "p1",
+          "fixed": true
+        },
+        {
+          "id": "attn-fwd",
+          "label": "Attention forward",
+          "type": "attention",
+          "durationMs": 3.4,
+          "track": "compute",
+          "phase": "p2",
+          "fixed": true
+        },
+        {
+          "id": "moe-param-ag",
+          "label": "Prefetch MoE parameters",
+          "type": "collective",
+          "durationMs": 5.4,
+          "track": "comm",
+          "phase": "p2"
+        },
+        {
+          "id": "route",
+          "label": "Router + top-k",
+          "type": "routing",
+          "durationMs": 0.7,
+          "track": "compute",
+          "phase": "p3"
+        },
+        {
+          "id": "experts-fwd",
+          "label": "Top-8 experts forward",
+          "type": "mlp",
+          "durationMs": 3.2,
+          "track": "compute",
+          "phase": "p4"
+        },
+        {
+          "id": "loss",
+          "label": "Loss",
+          "type": "loss",
+          "durationMs": 0.3,
+          "track": "compute",
+          "phase": "p5",
+          "fixed": true
+        },
+        {
+          "id": "moe-bwd-ag",
+          "label": "Gather MoE parameters for backward",
+          "type": "collective",
+          "durationMs": 4.5,
+          "track": "comm",
+          "phase": "p6"
+        },
+        {
+          "id": "experts-bwd",
+          "label": "Expert backward",
+          "type": "mlp",
+          "durationMs": 4,
+          "track": "compute",
+          "phase": "p7"
+        },
+        {
+          "id": "attn-bwd-ag",
+          "label": "Prefetch attention parameters",
+          "type": "collective",
+          "durationMs": 3,
+          "track": "comm",
+          "phase": "p7",
+          "fixed": true
+        },
+        {
+          "id": "attn-bwd",
+          "label": "Attention backward",
+          "type": "attention",
+          "durationMs": 2,
+          "track": "compute",
+          "phase": "p8",
+          "fixed": true
+        },
+        {
+          "id": "moe-grad-rs",
+          "label": "MoE gradient reduce-scatter",
+          "type": "collective",
+          "durationMs": 1.8,
+          "track": "comm",
+          "phase": "p8"
+        },
+        {
+          "id": "attn-grad-rs",
+          "label": "Attention gradient reduce-scatter",
+          "type": "collective",
+          "durationMs": 1.4,
+          "track": "comm",
+          "phase": "p9",
+          "fixed": true
+        },
+        {
+          "id": "optimizer",
+          "label": "Optimizer step",
+          "type": "optimizer",
+          "durationMs": 0.5,
+          "track": "compute",
+          "phase": "p10",
+          "fixed": true
+        }
+      ],
+      "preview": [
+        {
+          "type": "collective",
+          "weight": 2.6
+        },
+        {
+          "type": "attention",
+          "weight": 3.4
+        },
+        {
+          "type": "collective",
+          "weight": 5.4
+        },
+        {
+          "type": "routing",
+          "weight": 0.7
+        },
+        {
+          "type": "mlp",
+          "weight": 3.2
+        },
+        {
+          "type": "loss",
+          "weight": 0.3
+        },
+        {
+          "type": "mlp",
+          "weight": 4
+        },
+        {
+          "type": "collective",
+          "weight": 3.2
+        }
+      ]
+    },
+    {
+      "id": "fsdp-moe-ep",
+      "order": 13,
+      "section": "IV · Sharding and overlap",
+      "category": "MoE",
+      "resourceIds": [
+        "torchtitan",
+        "moe",
+        "ultrascale"
+      ],
+      "title": "Two-layer dense FSDP + expert parallelism",
+      "difficulty": 5,
+      "topology": "Dense FSDP=8 · Expert EP=8 · NVLink",
+      "scope": "2 Qwen3-235B-A22B-shaped layers",
+      "totalMs": 49.913,
+      "verification": {
+        "status": "measured",
+        "label": "Measured on 8× H100",
+        "implementation": "TorchTitan v0.2.0 (29624e37fa6dd319fd671b009338651b5c665da2)",
+        "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536.",
+        "measurement": "58.414 ms measured end-to-end; 57.794 ms raw rank-0 GPU window; 49.913 ms dependency-packed semantic timeline shown.",
+        "timeline": "Measured busy durations are packed; gaps remain only for FSDP/EP data dependencies."
+      },
+      "description": [
+        "This challenge is reconstructed from an Nsight Systems capture of TorchTitan, not from a roofline sketch. It runs two Qwen3-235B-A22B-shaped MoE layers on eight H100s with dense FSDP=8 and expert parallelism=8.",
+        "There are no expert-weight all-gathers in this topology. EP already partitions the 128 routed experts across the same eight ranks, leaving TorchTitan's expert FSDP mesh at degree one. Each rank owns 16 complete experts; FSDP all-gathers materialize only dense attention, router, output, and root parameters. The large MoE communications are activation and gradient all-to-alls.",
+        "The dense attention path is intentionally summarized as fixed context. The MoE path uses the industry-level granularity shown by the capture: EP dispatch, permute, grouped-GEMM SwiGLU, unpermute, and EP combine.",
+        "Backward is shown at the same granularity. The backward of combine dispatches dY to expert owners; grouped GEMMs compute gradI and gradW; the backward of dispatch combines dX back onto token-owner ranks. Place all twenty MoE events across the two layers."
+      ],
+      "paletteGroups": [
+        {
+          "id": "layer0-forward",
+          "label": "L0 forward",
+          "blockIds": [
+            "layer0-dispatch",
+            "layer0-permute",
+            "layer0-swiglu-fwd",
+            "layer0-unpermute",
+            "layer0-combine"
+          ]
+        },
+        {
+          "id": "layer1-forward",
+          "label": "L1 forward",
+          "blockIds": [
+            "layer1-dispatch",
+            "layer1-permute",
+            "layer1-swiglu-fwd",
+            "layer1-unpermute",
+            "layer1-combine"
+          ]
+        },
+        {
+          "id": "layer1-backward",
+          "label": "L1 backward",
+          "blockIds": [
+            "layer1-dy-a2a",
+            "layer1-unpermute-bwd",
+            "layer1-swiglu-bwd",
+            "layer1-permute-bwd",
+            "layer1-dx-a2a"
+          ]
+        },
+        {
+          "id": "layer0-backward",
+          "label": "L0 backward",
+          "blockIds": [
+            "layer0-dy-a2a",
+            "layer0-unpermute-bwd",
+            "layer0-swiglu-bwd",
+            "layer0-permute-bwd",
+            "layer0-dx-a2a"
+          ]
+        }
+      ],
+      "tracks": [
+        {
+          "id": "compute",
+          "label": "Compute",
+          "subtitle": "CUDA stream 7"
+        },
+        {
+          "id": "fsdp-ag",
+          "label": "Dense FSDP all-gather",
+          "subtitle": "NCCL stream 28"
+        },
+        {
+          "id": "ep-a2a",
+          "label": "EP all-to-all",
+          "subtitle": "NCCL stream 31"
+        },
+        {
+          "id": "fsdp-rs",
+          "label": "FSDP reduce-scatter",
+          "subtitle": "NCCL stream 32"
+        }
+      ],
+      "blocks": [
+        {
+          "id": "layer0-dense-ag",
+          "label": "Layer 0 dense-parameter all-gather",
+          "shortLabel": "L0 AG",
+          "type": "collective",
+          "durationMs": 0.51,
+          "startMs": 0,
+          "track": "fsdp-ag",
+          "description": "Materialize layer 0 dense attention and router parameters.",
+          "fixed": true,
+          "rawStartMs": 1.999
+        },
+        {
+          "id": "layer0-attn-fwd",
+          "label": "Layer 0 attention forward",
+          "shortLabel": "L0 Attention",
+          "type": "attention",
+          "durationMs": 2.479,
+          "startMs": 0.51,
+          "track": "compute",
+          "description": "Attention forward, including its dense-path normalization and residual work. Attention and router parameters were materialized by the same outer-block FSDP all-gather.",
+          "fixed": true,
+          "rawStartMs": 2.232
+        },
+        {
+          "id": "layer0-router-fwd",
+          "label": "Layer 0 router + top-k",
+          "shortLabel": "L0 Router",
+          "type": "routing",
+          "durationMs": 0.116,
+          "startMs": 2.989,
+          "track": "compute",
+          "description": "Router logits, scoring, and top-k expert selection. No NCCL all-gather occurs between attention and routing in this topology.",
+          "fixed": true,
+          "calibration": "GPU-projected NVTX split"
+        },
+        {
+          "id": "layer0-dispatch",
+          "label": "Layer 0 EP dispatch (A2A)",
+          "shortLabel": "L0 Dispatch",
+          "type": "collective",
+          "durationMs": 0.998,
+          "startMs": 3.105,
+          "track": "ep-a2a",
+          "description": "Exchange routing metadata and token activations from token-owner ranks to expert-owner ranks.",
+          "rawStartMs": 5.813
+        },
+        {
+          "id": "layer0-permute",
+          "label": "Layer 0 permute",
+          "shortLabel": "L0 Permute",
+          "type": "routing",
+          "durationMs": 0.505,
+          "startMs": 4.103,
+          "track": "compute",
+          "description": "Pack locally received tokens into contiguous expert-major order for grouped GEMM.",
+          "rawStartMs": 6.184
+        },
+        {
+          "id": "layer0-swiglu-fwd",
+          "label": "Layer 0 MoE SwiGLU forward",
+          "shortLabel": "L0 SwiGLU FWD",
+          "type": "mlp",
+          "durationMs": 1.846,
+          "startMs": 4.608,
+          "track": "compute",
+          "description": "Three grouped expert GEMMs plus the SwiGLU activation.",
+          "rawStartMs": 7.388
+        },
+        {
+          "id": "layer1-forward-ag",
+          "label": "Prefetch layer 1 dense parameters",
+          "shortLabel": "L1 AG",
+          "type": "collective",
+          "durationMs": 0.503,
+          "startMs": 5.7,
+          "track": "fsdp-ag",
+          "description": "FSDP prefetch overlaps the tail of layer 0 expert compute.",
+          "fixed": true,
+          "rawStartMs": 9.217
+        },
+        {
+          "id": "layer0-unpermute",
+          "label": "Layer 0 unpermute",
+          "shortLabel": "L0 Unpermute",
+          "type": "routing",
+          "durationMs": 0.704,
+          "startMs": 6.454,
+          "track": "compute",
+          "description": "Restore the token ordering expected by the EP combine operation.",
+          "rawStartMs": 9.247
+        },
+        {
+          "id": "layer0-combine",
+          "label": "Layer 0 EP combine (A2A)",
+          "shortLabel": "L0 Combine",
+          "type": "collective",
+          "durationMs": 1.291,
+          "startMs": 7.158,
+          "track": "ep-a2a",
+          "description": "Return expert outputs from expert-owner ranks to token-owner ranks.",
+          "rawStartMs": 9.954
+        },
+        {
+          "id": "layer1-attn-fwd",
+          "label": "Layer 1 attention forward",
+          "shortLabel": "L1 Attention",
+          "type": "attention",
+          "durationMs": 4.103,
+          "startMs": 8.449,
+          "track": "compute",
+          "description": "Layer 1 attention and associated dense-path work, using parameters from the shared layer all-gather.",
+          "fixed": true,
+          "rawStartMs": 11.247
+        },
+        {
+          "id": "layer1-router-fwd",
+          "label": "Layer 1 router + top-k",
+          "shortLabel": "L1 Router",
+          "type": "routing",
+          "durationMs": 0.198,
+          "startMs": 12.552,
+          "track": "compute",
+          "description": "Router logits, scoring, and top-k expert selection immediately before EP dispatch; there is no intervening parameter collective.",
+          "fixed": true,
+          "calibration": "GPU-projected NVTX split"
+        },
+        {
+          "id": "layer1-dispatch",
+          "label": "Layer 1 EP dispatch (A2A)",
+          "shortLabel": "L1 Dispatch",
+          "type": "collective",
+          "durationMs": 0.804,
+          "startMs": 12.75,
+          "track": "ep-a2a",
+          "description": "Send layer 1 routed token activations to expert-owner ranks.",
+          "rawStartMs": 16.501
+        },
+        {
+          "id": "layer1-permute",
+          "label": "Layer 1 permute",
+          "shortLabel": "L1 Permute",
+          "type": "routing",
+          "durationMs": 0.497,
+          "startMs": 13.554,
+          "track": "compute",
+          "description": "Pack layer 1 received tokens into expert-major order.",
+          "rawStartMs": 16.83
+        },
+        {
+          "id": "layer1-swiglu-fwd",
+          "label": "Layer 1 MoE SwiGLU forward",
+          "shortLabel": "L1 SwiGLU FWD",
+          "type": "mlp",
+          "durationMs": 1.84,
+          "startMs": 14.051,
+          "track": "compute",
+          "description": "Layer 1 grouped expert GEMMs and SwiGLU activation.",
+          "rawStartMs": 17.869
+        },
+        {
+          "id": "layer1-unpermute",
+          "label": "Layer 1 unpermute",
+          "shortLabel": "L1 Unpermute",
+          "type": "routing",
+          "durationMs": 0.647,
+          "startMs": 15.891,
+          "track": "compute",
+          "description": "Restore layer 1 token ordering before combine.",
+          "rawStartMs": 19.723
+        },
+        {
+          "id": "layer1-combine",
+          "label": "Layer 1 EP combine (A2A)",
+          "shortLabel": "L1 Combine",
+          "type": "collective",
+          "durationMs": 0.765,
+          "startMs": 16.538,
+          "track": "ep-a2a",
+          "description": "Return layer 1 expert outputs to token-owner ranks.",
+          "rawStartMs": 20.373
+        },
+        {
+          "id": "output-loss",
+          "label": "Output projection + cross-entropy loss",
+          "shortLabel": "Output + Loss",
+          "type": "loss",
+          "durationMs": 1.993,
+          "startMs": 17.303,
+          "track": "compute",
+          "description": "Compute logits and cross-entropy after layer 1.",
+          "fixed": true,
+          "rawStartMs": 21.141
+        },
+        {
+          "id": "layer1-backward-ag-a",
+          "label": "Layer 1 backward FSDP all-gather A",
+          "shortLabel": "BWD AG",
+          "type": "collective",
+          "durationMs": 0.462,
+          "startMs": 19.4,
+          "track": "fsdp-ag",
+          "description": "First dense-parameter materialization needed by backward.",
+          "fixed": true,
+          "rawStartMs": 22.947
+        },
+        {
+          "id": "output-rs",
+          "label": "Output gradient reduce-scatter",
+          "shortLabel": "Output RS",
+          "type": "collective",
+          "durationMs": 0.136,
+          "startMs": 19.9,
+          "track": "fsdp-rs",
+          "description": "Shard output projection gradients.",
+          "fixed": true,
+          "rawStartMs": 23.413
+        },
+        {
+          "id": "layer1-backward-ag-b",
+          "label": "Layer 1 backward FSDP all-gather B",
+          "shortLabel": "BWD AG",
+          "type": "collective",
+          "durationMs": 0.494,
+          "startMs": 20.1,
+          "track": "fsdp-ag",
+          "description": "Second dense-parameter materialization needed by layer 1 backward.",
+          "fixed": true,
+          "rawStartMs": 23.658
+        },
+        {
+          "id": "output-loss-bwd",
+          "label": "Output + loss backward",
+          "shortLabel": "Output BWD",
+          "type": "loss",
+          "durationMs": 2.406,
+          "startMs": 19.296,
+          "track": "compute",
+          "description": "Fixed output projection and loss backward work.",
+          "fixed": true,
+          "rawStartMs": 23.426
+        },
+        {
+          "id": "layer1-dy-a2a",
+          "label": "Layer 1 combine backward: dY all-to-all",
+          "shortLabel": "L1 dY A2A",
+          "type": "collective",
+          "durationMs": 0.767,
+          "startMs": 21.702,
+          "track": "ep-a2a",
+          "description": "Backward of EP combine: send expert-output gradients dY to expert-owner ranks.",
+          "rawStartMs": 26.646
+        },
+        {
+          "id": "layer1-unpermute-bwd",
+          "label": "Layer 1 unpermute backward",
+          "shortLabel": "L1 Unpermute BWD",
+          "type": "routing",
+          "durationMs": 0.278,
+          "startMs": 22.469,
+          "track": "compute",
+          "description": "Backward through unpermute, restoring expert-major gradient layout.",
+          "rawStartMs": 27.415
+        },
+        {
+          "id": "layer1-swiglu-bwd",
+          "label": "Layer 1 MoE SwiGLU backward",
+          "shortLabel": "L1 SwiGLU BWD",
+          "type": "mlp",
+          "durationMs": 3.924,
+          "startMs": 22.747,
+          "track": "compute",
+          "description": "Grouped GEMMs compute expert gradI and gradW for gate, up, and down projections.",
+          "rawStartMs": 27.878
+        },
+        {
+          "id": "layer1-permute-bwd",
+          "label": "Layer 1 permute backward",
+          "shortLabel": "L1 Permute BWD",
+          "type": "routing",
+          "durationMs": 0.592,
+          "startMs": 26.671,
+          "track": "compute",
+          "description": "Backward through the expert-major permutation.",
+          "rawStartMs": 31.924
+        },
+        {
+          "id": "layer1-dx-a2a",
+          "label": "Layer 1 dispatch backward: dX all-to-all",
+          "shortLabel": "L1 dX A2A",
+          "type": "collective",
+          "durationMs": 0.807,
+          "startMs": 27.263,
+          "track": "ep-a2a",
+          "description": "Backward of EP dispatch: combine expert-input gradients dX onto token-owner ranks.",
+          "rawStartMs": 32.561
+        },
+        {
+          "id": "layer1-router-bwd",
+          "label": "Layer 1 router backward",
+          "shortLabel": "L1 Router BWD",
+          "type": "routing",
+          "durationMs": 0.219,
+          "startMs": 28.07,
+          "track": "compute",
+          "description": "Backpropagate through router scores and top-k weights after expert-input gradients return.",
+          "fixed": true,
+          "calibration": "GPU-projected NVTX split"
+        },
+        {
+          "id": "layer1-attn-bwd",
+          "label": "Layer 1 attention backward",
+          "shortLabel": "L1 Attention BWD",
+          "type": "attention",
+          "durationMs": 8.622,
+          "startMs": 28.289,
+          "track": "compute",
+          "description": "Fixed attention-path backward for layer 1.",
+          "fixed": true,
+          "rawStartMs": 33.465
+        },
+        {
+          "id": "layer1-dense-rs",
+          "label": "Layer 1 dense gradient reduce-scatter",
+          "shortLabel": "L1 RS",
+          "type": "collective",
+          "durationMs": 1.291,
+          "startMs": 35.62,
+          "track": "fsdp-rs",
+          "description": "Reduce-scatter layer 1 dense gradients.",
+          "fixed": true,
+          "rawStartMs": 40.125
+        },
+        {
+          "id": "layer0-backward-ag",
+          "label": "Prefetch layer 0 dense parameters for backward",
+          "shortLabel": "L0 BWD AG",
+          "type": "collective",
+          "durationMs": 0.107,
+          "startMs": 36.804,
+          "track": "fsdp-ag",
+          "description": "Prefetch layer 0 dense parameters while layer 1 backward is still running.",
+          "fixed": true,
+          "rawStartMs": 41.428
+        },
+        {
+          "id": "layer0-dy-a2a",
+          "label": "Layer 0 combine backward: dY all-to-all",
+          "shortLabel": "L0 dY A2A",
+          "type": "collective",
+          "durationMs": 0.849,
+          "startMs": 36.911,
+          "track": "ep-a2a",
+          "description": "Backward of layer 0 EP combine: send dY to expert-owner ranks.",
+          "rawStartMs": 43.43
+        },
+        {
+          "id": "layer0-unpermute-bwd",
+          "label": "Layer 0 unpermute backward",
+          "shortLabel": "L0 Unpermute BWD",
+          "type": "routing",
+          "durationMs": 0.278,
+          "startMs": 37.76,
+          "track": "compute",
+          "description": "Backward through layer 0 unpermute.",
+          "rawStartMs": 44.281
+        },
+        {
+          "id": "layer0-swiglu-bwd",
+          "label": "Layer 0 MoE SwiGLU backward",
+          "shortLabel": "L0 SwiGLU BWD",
+          "type": "mlp",
+          "durationMs": 3.919,
+          "startMs": 38.038,
+          "track": "compute",
+          "description": "Layer 0 grouped GEMM gradI and gradW computation.",
+          "rawStartMs": 44.741
+        },
+        {
+          "id": "layer0-permute-bwd",
+          "label": "Layer 0 permute backward",
+          "shortLabel": "L0 Permute BWD",
+          "type": "routing",
+          "durationMs": 0.587,
+          "startMs": 41.957,
+          "track": "compute",
+          "description": "Backward through layer 0 expert-major permutation.",
+          "rawStartMs": 48.767
+        },
+        {
+          "id": "layer0-dx-a2a",
+          "label": "Layer 0 dispatch backward: dX all-to-all",
+          "shortLabel": "L0 dX A2A",
+          "type": "collective",
+          "durationMs": 0.802,
+          "startMs": 42.544,
+          "track": "ep-a2a",
+          "description": "Backward of layer 0 EP dispatch: combine dX onto token-owner ranks.",
+          "rawStartMs": 49.384
+        },
+        {
+          "id": "layer0-router-bwd",
+          "label": "Layer 0 router backward",
+          "shortLabel": "L0 Router BWD",
+          "type": "routing",
+          "durationMs": 0.222,
+          "startMs": 43.346,
+          "track": "compute",
+          "description": "Backpropagate through layer 0 router scores and top-k weights.",
+          "fixed": true,
+          "calibration": "GPU-projected NVTX split"
+        },
+        {
+          "id": "layer0-attn-bwd",
+          "label": "Layer 0 attention backward",
+          "shortLabel": "L0 Attention BWD",
+          "type": "attention",
+          "durationMs": 6.296,
+          "startMs": 43.568,
+          "track": "compute",
+          "description": "Fixed attention-path backward for layer 0.",
+          "fixed": true,
+          "rawStartMs": 50.283
+        },
+        {
+          "id": "layer0-dense-rs",
+          "label": "Layer 0 dense gradient reduce-scatter",
+          "shortLabel": "L0 RS",
+          "type": "collective",
+          "durationMs": 0.887,
+          "startMs": 48.977,
+          "track": "fsdp-rs",
+          "description": "Reduce-scatter layer 0 dense gradients.",
+          "fixed": true,
+          "rawStartMs": 56.834
+        },
+        {
+          "id": "root-rs",
+          "label": "Final root gradient reduce-scatter",
+          "shortLabel": "Final RS",
+          "type": "collective",
+          "durationMs": 0.049,
+          "startMs": 49.864,
+          "track": "fsdp-rs",
+          "description": "Final small root-module gradient shard.",
+          "fixed": true,
+          "rawStartMs": 57.745
+        }
+      ],
+      "preview": [
+        {
+          "type": "attention",
+          "weight": 2.8
+        },
+        {
+          "type": "collective",
+          "weight": 1.2
+        },
+        {
+          "type": "routing",
+          "weight": 1.2
+        },
+        {
+          "type": "mlp",
+          "weight": 1.9
+        },
+        {
+          "type": "routing",
+          "weight": 0.7
+        },
+        {
+          "type": "collective",
+          "weight": 1.3
+        },
+        {
+          "type": "attention",
+          "weight": 4.5
+        },
+        {
+          "type": "loss",
+          "weight": 2.1
+        },
+        {
+          "type": "mlp",
+          "weight": 3.8
+        },
+        {
+          "type": "attention",
+          "weight": 9.2
+        }
+      ],
+      "timelineMode": "absolute",
+      "pxPerMs": 60,
+      "gridSegments": 12
+    }
+  ]
+}

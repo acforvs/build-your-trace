@@ -1,0 +1,616 @@
+{
+  "lessons": [
+    {
+      "id": "all-gather",
+      "order": 1,
+      "title": "AllGather",
+      "summary": "Replicate every rank-owned shard on every rank.",
+      "instruction": "Fill each destination tensor with A, B, C, D in source-rank order.",
+      "operation": "all_gather",
+      "difficulty": 1,
+      "ranks": 4,
+      "inputRanks": [
+        [
+          {
+            "id": "a",
+            "label": "A",
+            "source": 0,
+            "position": 0
+          }
+        ],
+        [
+          {
+            "id": "b",
+            "label": "B",
+            "source": 1,
+            "position": 1
+          }
+        ],
+        [
+          {
+            "id": "c",
+            "label": "C",
+            "source": 2,
+            "position": 2
+          }
+        ],
+        [
+          {
+            "id": "d",
+            "label": "D",
+            "source": 3,
+            "position": 3
+          }
+        ]
+      ],
+      "resultChunks": {
+        "a": {
+          "label": "A",
+          "description": "Shard originally owned by rank 0."
+        },
+        "b": {
+          "label": "B",
+          "description": "Shard originally owned by rank 1."
+        },
+        "c": {
+          "label": "C",
+          "description": "Shard originally owned by rank 2."
+        },
+        "d": {
+          "label": "D",
+          "description": "Shard originally owned by rank 3."
+        }
+      },
+      "outputRanks": [
+        [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        [
+          "a",
+          "b",
+          "c",
+          "d"
+        ]
+      ],
+      "insight": "AllGather preserves every shard and replicates the concatenated tensor. No reduction occurs.",
+      "explanation": "every rank receives every source shard in the same concatenation order."
+    },
+    {
+      "id": "reduce-scatter",
+      "order": 2,
+      "title": "ReduceScatter",
+      "summary": "Reduce matching tensor positions, then keep one result shard per rank.",
+      "instruction": "Place each reduced shard on the rank that owns its tensor position.",
+      "operation": "reduce_scatter",
+      "difficulty": 2,
+      "ranks": 4,
+      "inputRanks": [
+        [
+          {
+            "id": "r0-a",
+            "label": "A₀",
+            "source": 0,
+            "position": 0
+          },
+          {
+            "id": "r0-b",
+            "label": "B₀",
+            "source": 0,
+            "position": 1
+          },
+          {
+            "id": "r0-c",
+            "label": "C₀",
+            "source": 0,
+            "position": 2
+          },
+          {
+            "id": "r0-d",
+            "label": "D₀",
+            "source": 0,
+            "position": 3
+          }
+        ],
+        [
+          {
+            "id": "r1-a",
+            "label": "A₁",
+            "source": 1,
+            "position": 0
+          },
+          {
+            "id": "r1-b",
+            "label": "B₁",
+            "source": 1,
+            "position": 1
+          },
+          {
+            "id": "r1-c",
+            "label": "C₁",
+            "source": 1,
+            "position": 2
+          },
+          {
+            "id": "r1-d",
+            "label": "D₁",
+            "source": 1,
+            "position": 3
+          }
+        ],
+        [
+          {
+            "id": "r2-a",
+            "label": "A₂",
+            "source": 2,
+            "position": 0
+          },
+          {
+            "id": "r2-b",
+            "label": "B₂",
+            "source": 2,
+            "position": 1
+          },
+          {
+            "id": "r2-c",
+            "label": "C₂",
+            "source": 2,
+            "position": 2
+          },
+          {
+            "id": "r2-d",
+            "label": "D₂",
+            "source": 2,
+            "position": 3
+          }
+        ],
+        [
+          {
+            "id": "r3-a",
+            "label": "A₃",
+            "source": 3,
+            "position": 0
+          },
+          {
+            "id": "r3-b",
+            "label": "B₃",
+            "source": 3,
+            "position": 1
+          },
+          {
+            "id": "r3-c",
+            "label": "C₃",
+            "source": 3,
+            "position": 2
+          },
+          {
+            "id": "r3-d",
+            "label": "D₃",
+            "source": 3,
+            "position": 3
+          }
+        ]
+      ],
+      "resultChunks": {
+        "sum-0": {
+          "label": "ΣA",
+          "description": "A₀ + A₁ + A₂ + A₃"
+        },
+        "sum-1": {
+          "label": "ΣB",
+          "description": "B₀ + B₁ + B₂ + B₃"
+        },
+        "sum-2": {
+          "label": "ΣC",
+          "description": "C₀ + C₁ + C₂ + C₃"
+        },
+        "sum-3": {
+          "label": "ΣD",
+          "description": "D₀ + D₁ + D₂ + D₃"
+        }
+      },
+      "outputRanks": [
+        [
+          "sum-0"
+        ],
+        [
+          "sum-1"
+        ],
+        [
+          "sum-2"
+        ],
+        [
+          "sum-3"
+        ]
+      ],
+      "insight": "ReduceScatter reduces elementwise across ranks before partitioning the result; rank r keeps reduced position r.",
+      "explanation": "matching positions are reduced across all four inputs and scattered one result shard per rank."
+    },
+    {
+      "id": "all-reduce",
+      "order": 3,
+      "title": "AllReduce",
+      "summary": "Reduce matching tensor positions and replicate the complete result.",
+      "instruction": "Build the same reduced tensor ΣA, ΣB, ΣC, ΣD on every rank.",
+      "operation": "all_reduce",
+      "difficulty": 2,
+      "ranks": 4,
+      "inputRanks": [
+        [
+          {
+            "id": "r0-a",
+            "label": "A₀",
+            "source": 0,
+            "position": 0
+          },
+          {
+            "id": "r0-b",
+            "label": "B₀",
+            "source": 0,
+            "position": 1
+          },
+          {
+            "id": "r0-c",
+            "label": "C₀",
+            "source": 0,
+            "position": 2
+          },
+          {
+            "id": "r0-d",
+            "label": "D₀",
+            "source": 0,
+            "position": 3
+          }
+        ],
+        [
+          {
+            "id": "r1-a",
+            "label": "A₁",
+            "source": 1,
+            "position": 0
+          },
+          {
+            "id": "r1-b",
+            "label": "B₁",
+            "source": 1,
+            "position": 1
+          },
+          {
+            "id": "r1-c",
+            "label": "C₁",
+            "source": 1,
+            "position": 2
+          },
+          {
+            "id": "r1-d",
+            "label": "D₁",
+            "source": 1,
+            "position": 3
+          }
+        ],
+        [
+          {
+            "id": "r2-a",
+            "label": "A₂",
+            "source": 2,
+            "position": 0
+          },
+          {
+            "id": "r2-b",
+            "label": "B₂",
+            "source": 2,
+            "position": 1
+          },
+          {
+            "id": "r2-c",
+            "label": "C₂",
+            "source": 2,
+            "position": 2
+          },
+          {
+            "id": "r2-d",
+            "label": "D₂",
+            "source": 2,
+            "position": 3
+          }
+        ],
+        [
+          {
+            "id": "r3-a",
+            "label": "A₃",
+            "source": 3,
+            "position": 0
+          },
+          {
+            "id": "r3-b",
+            "label": "B₃",
+            "source": 3,
+            "position": 1
+          },
+          {
+            "id": "r3-c",
+            "label": "C₃",
+            "source": 3,
+            "position": 2
+          },
+          {
+            "id": "r3-d",
+            "label": "D₃",
+            "source": 3,
+            "position": 3
+          }
+        ]
+      ],
+      "resultChunks": {
+        "sum-0": {
+          "label": "ΣA",
+          "description": "A₀ + A₁ + A₂ + A₃"
+        },
+        "sum-1": {
+          "label": "ΣB",
+          "description": "B₀ + B₁ + B₂ + B₃"
+        },
+        "sum-2": {
+          "label": "ΣC",
+          "description": "C₀ + C₁ + C₂ + C₃"
+        },
+        "sum-3": {
+          "label": "ΣD",
+          "description": "D₀ + D₁ + D₂ + D₃"
+        }
+      },
+      "outputRanks": [
+        [
+          "sum-0",
+          "sum-1",
+          "sum-2",
+          "sum-3"
+        ],
+        [
+          "sum-0",
+          "sum-1",
+          "sum-2",
+          "sum-3"
+        ],
+        [
+          "sum-0",
+          "sum-1",
+          "sum-2",
+          "sum-3"
+        ],
+        [
+          "sum-0",
+          "sum-1",
+          "sum-2",
+          "sum-3"
+        ]
+      ],
+      "insight": "AllReduce is logically a ReduceScatter followed by an AllGather, though implementations may use fused collective algorithms.",
+      "explanation": "every tensor position is reduced across ranks and the complete reduced tensor is replicated."
+    },
+    {
+      "id": "all-to-all",
+      "order": 4,
+      "title": "AllToAll",
+      "summary": "Send input split i to group rank i, then receive one split from every source rank.",
+      "instruction": "Treat each input row as input_tensor_list: position d is sent to destination rank d. Build each output list in source-rank order.",
+      "operation": "all_to_all",
+      "difficulty": 3,
+      "ranks": 4,
+      "inputRanks": [
+        [
+          {
+            "id": "0-0",
+            "label": "0→0",
+            "source": 0,
+            "destination": 0
+          },
+          {
+            "id": "0-1",
+            "label": "0→1",
+            "source": 0,
+            "destination": 1
+          },
+          {
+            "id": "0-2",
+            "label": "0→2",
+            "source": 0,
+            "destination": 2
+          },
+          {
+            "id": "0-3",
+            "label": "0→3",
+            "source": 0,
+            "destination": 3
+          }
+        ],
+        [
+          {
+            "id": "1-0",
+            "label": "1→0",
+            "source": 1,
+            "destination": 0
+          },
+          {
+            "id": "1-1",
+            "label": "1→1",
+            "source": 1,
+            "destination": 1
+          },
+          {
+            "id": "1-2",
+            "label": "1→2",
+            "source": 1,
+            "destination": 2
+          },
+          {
+            "id": "1-3",
+            "label": "1→3",
+            "source": 1,
+            "destination": 3
+          }
+        ],
+        [
+          {
+            "id": "2-0",
+            "label": "2→0",
+            "source": 2,
+            "destination": 0
+          },
+          {
+            "id": "2-1",
+            "label": "2→1",
+            "source": 2,
+            "destination": 1
+          },
+          {
+            "id": "2-2",
+            "label": "2→2",
+            "source": 2,
+            "destination": 2
+          },
+          {
+            "id": "2-3",
+            "label": "2→3",
+            "source": 2,
+            "destination": 3
+          }
+        ],
+        [
+          {
+            "id": "3-0",
+            "label": "3→0",
+            "source": 3,
+            "destination": 0
+          },
+          {
+            "id": "3-1",
+            "label": "3→1",
+            "source": 3,
+            "destination": 1
+          },
+          {
+            "id": "3-2",
+            "label": "3→2",
+            "source": 3,
+            "destination": 2
+          },
+          {
+            "id": "3-3",
+            "label": "3→3",
+            "source": 3,
+            "destination": 3
+          }
+        ]
+      ],
+      "resultChunks": {
+        "0-0": {
+          "label": "0→0",
+          "description": "Input-list position 0 on source rank 0; sent to group rank 0."
+        },
+        "0-1": {
+          "label": "0→1",
+          "description": "Input-list position 1 on source rank 0; sent to group rank 1."
+        },
+        "0-2": {
+          "label": "0→2",
+          "description": "Input-list position 2 on source rank 0; sent to group rank 2."
+        },
+        "0-3": {
+          "label": "0→3",
+          "description": "Input-list position 3 on source rank 0; sent to group rank 3."
+        },
+        "1-0": {
+          "label": "1→0",
+          "description": "Input-list position 0 on source rank 1; sent to group rank 0."
+        },
+        "1-1": {
+          "label": "1→1",
+          "description": "Input-list position 1 on source rank 1; sent to group rank 1."
+        },
+        "1-2": {
+          "label": "1→2",
+          "description": "Input-list position 2 on source rank 1; sent to group rank 2."
+        },
+        "1-3": {
+          "label": "1→3",
+          "description": "Input-list position 3 on source rank 1; sent to group rank 3."
+        },
+        "2-0": {
+          "label": "2→0",
+          "description": "Input-list position 0 on source rank 2; sent to group rank 0."
+        },
+        "2-1": {
+          "label": "2→1",
+          "description": "Input-list position 1 on source rank 2; sent to group rank 1."
+        },
+        "2-2": {
+          "label": "2→2",
+          "description": "Input-list position 2 on source rank 2; sent to group rank 2."
+        },
+        "2-3": {
+          "label": "2→3",
+          "description": "Input-list position 3 on source rank 2; sent to group rank 3."
+        },
+        "3-0": {
+          "label": "3→0",
+          "description": "Input-list position 0 on source rank 3; sent to group rank 0."
+        },
+        "3-1": {
+          "label": "3→1",
+          "description": "Input-list position 1 on source rank 3; sent to group rank 1."
+        },
+        "3-2": {
+          "label": "3→2",
+          "description": "Input-list position 2 on source rank 3; sent to group rank 2."
+        },
+        "3-3": {
+          "label": "3→3",
+          "description": "Input-list position 3 on source rank 3; sent to group rank 3."
+        }
+      },
+      "outputRanks": [
+        [
+          "0-0",
+          "1-0",
+          "2-0",
+          "3-0"
+        ],
+        [
+          "0-1",
+          "1-1",
+          "2-1",
+          "3-1"
+        ],
+        [
+          "0-2",
+          "1-2",
+          "2-2",
+          "3-2"
+        ],
+        [
+          "0-3",
+          "1-3",
+          "2-3",
+          "3-3"
+        ]
+      ],
+      "insight": "At split granularity, standard AllToAll really is a matrix transpose: input-list position i maps to group rank i, and output-list position i comes from group rank i. Uneven split sizes change boundaries, not this rank mapping.",
+      "explanation": "every source sends split d to destination rank d, and every destination stores received splits in source-rank order."
+    }
+  ]
+}

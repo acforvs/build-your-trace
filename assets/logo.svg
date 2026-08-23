@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 180" role="img" aria-labelledby="title desc">
+  <title id="title">Build Your Trace</title>
+  <desc id="desc">Three staggered execution tracks connected by dependencies.</desc>
+  <rect width="640" height="180" rx="34" fill="#111827"/>
+  <g fill="none" stroke="#6b7280" stroke-width="3" stroke-linecap="round">
+    <path d="M72 48H568"/><path d="M72 90H568"/><path d="M72 132H568"/>
+  </g>
+  <g>
+    <rect x="94" y="31" width="112" height="34" rx="8" fill="#70d6ff"/>
+    <rect x="236" y="73" width="146" height="34" rx="8" fill="#b794f4"/>
+    <rect x="416" y="115" width="104" height="34" rx="8" fill="#ffb86b"/>
+  </g>
+  <g fill="none" stroke="#f9fafb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M206 48C224 48 218 90 236 90"/><path d="M382 90C400 90 398 132 416 132"/>
+    <path d="m227 83 9 7-9 7"/><path d="m407 125 9 7-9 7"/>
+  </g>
+</svg>

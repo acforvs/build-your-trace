@@ -1,0 +1,167 @@
+{
+  "taskId": "fsdp-dense-granular",
+  "variant": {
+    "id": "ib",
+    "label": "Modeled IB",
+    "default": true,
+    "taskOverrides": {
+      "topology": "FSDP=8 cross-node · granular attention/MLP units · NDR400",
+      "scope": "2 dense Qwen-shaped layers · analytical cross-node granular FSDP",
+      "totalMs": 68.674,
+      "pxPerMs": 25,
+      "description": [
+        "This variant keeps every measured attention, MLP, root, and embedding compute duration from the granular TorchTitan trace and changes only FSDP AG/RS communication to cross-node NDR400 InfiniBand.",
+        "Attention and MLP remain separate FSDP states. MLP RS becomes ready after MLP backward and can begin while attention backward runs; attention RS follows attention backward on the same serialized reduction stream.",
+        "Each explicit backward prefetch is submitted at the triggering module's pre-backward boundary. NVLink GPU-start offsets are not carried into the IB model because they are topology- and scheduler-dependent.",
+        "Each rank uses one 400 Gb/s rail modeled at 42.5 GB/s effective. Total parameter bytes per layer are unchanged relative to whole-layer wrapping, but readiness is finer-grained."
+      ],
+      "insight": "Splitting attention and MLP starts MLP reduce-scatter earlier; it does not reduce communicated bytes."
+    },
+    "verification": {
+      "status": "modeled",
+      "label": "Analytical granular NDR400 model · measured TorchTitan ordering",
+      "implementation": "Measured attention/MLP FSDP2 order with byte-derived cross-node collectives and dependency rescheduling",
+      "workload": "Same two dense Qwen-shaped layers and granular FSDP states; only FSDP communication changes to one NDR400 rail per rank.",
+      "measurement": "68.674 ms modeled window; 9.426 ms shorter than whole-layer IB. Attention AG=2.986 ms, MLP AG=6.268 ms, attention RS=5.922 ms, MLP RS=12.485 ms."
+    },
+    "model": {
+      "peakGbpsPerRank": 400,
+      "peakGBsPerRank": 50,
+      "effectiveGBsPerRank": 42.5,
+      "railsPerNode": 8,
+      "aggregatePeakGBsPerNode": 400,
+      "latencyUsPerCollective": 50,
+      "formula": "time = total_bytes × (ranks - 1) / ranks / effective_bytes_per_second + latency",
+      "durationsMs": {
+        "attentionAllGatherBf16": 2.986192,
+        "mlpAllGatherBf16": 6.267608,
+        "attentionReduceScatterFp32": 5.922384,
+        "mlpReduceScatterFp32": 12.485215,
+        "rootAllGatherBf16": 0.093345,
+        "rootReduceScatterFp32": 0.136691,
+        "embeddingAllGatherBf16": 0.093177,
+        "embeddingReduceScatterFp32": 0.136353
+      },
+      "wholeLayerComparison": {
+        "wholeLayerIbMs": 78.1,
+        "granularIbMs": 68.674,
+        "savedMs": 9.426
+      }
+    },
+    "blockOverrides": {
+      "l0-attn-fwd-ag": {
+        "startMs": 0,
+        "durationMs": 2.986192,
+        "description": "Materialize L0 attention and attention-norm parameters from eight FSDP shards. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-attn-fwd": {
+        "startMs": 3.082352
+      },
+      "l0-mlp-fwd-ag": {
+        "startMs": 3.5076,
+        "durationMs": 6.267608,
+        "description": "L0 attention prefetches the separate dense SwiGLU FSDP state while attention computes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-mlp-fwd": {
+        "startMs": 9.787208,
+        "description": "MLP parameter copy-out, FFN norm, gate/up/down GEMMs, activation, and residual. Compute waits for the corresponding L0 MLP AG."
+      },
+      "l1-attn-fwd-ag": {
+        "startMs": 9.777208,
+        "durationMs": 2.986192,
+        "description": "L0 MLP prefetches the next layer's attention state. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-attn-fwd": {
+        "startMs": 12.7754,
+        "description": "Layer 1 attention forward using its independently gathered state. Compute waits for the corresponding L1 attention AG."
+      },
+      "l1-mlp-fwd-ag": {
+        "startMs": 12.7654,
+        "durationMs": 6.267608,
+        "description": "L1 attention prefetches its MLP state while earlier compute remains in flight. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-mlp-fwd": {
+        "startMs": 19.045008,
+        "description": "Layer 1 dense MLP forward with its own FSDP state. Compute waits for the corresponding L1 MLP AG."
+      },
+      "root-fwd-ag": {
+        "startMs": 19.035008,
+        "durationMs": 0.093345,
+        "description": "Prefetch the final norm/output state while layer 1 computes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "root-boundary": {
+        "startMs": 21.047919
+      },
+      "l1-mlp-bwd-ag": {
+        "startMs": 21.047919,
+        "durationMs": 6.267608,
+        "description": "The root module reconstructs L1 MLP parameters first because MLP backward executes first. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "root-rs": {
+        "startMs": 27.319207,
+        "durationMs": 0.136691,
+        "description": "Shard root gradients after root backward. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-mlp-bwd": {
+        "startMs": 27.326567
+      },
+      "l1-attn-bwd-ag": {
+        "startMs": 27.326567,
+        "durationMs": 2.986192,
+        "description": "L1 MLP backward prefetches L1 attention parameters. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-mlp-rs": {
+        "startMs": 31.695559,
+        "durationMs": 12.485215,
+        "description": "Starts about 6 µs after L1 MLP gradient packing and overlaps L1 attention backward. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-attn-bwd": {
+        "startMs": 31.748839
+      },
+      "l0-mlp-bwd-ag": {
+        "startMs": 31.748839,
+        "durationMs": 6.267608,
+        "description": "Triggered by the L1 attention pre-backward hook, not by completion of the L1 attention AG. The measured AG stream is therefore idle until autograd enters L1 attention backward. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-attn-rs": {
+        "startMs": 44.180774,
+        "durationMs": 5.922384,
+        "description": "Starts after L1 attention gradient packing and overlaps L0 MLP backward. It is ready earlier but waits behind the serialized L1 MLP RS."
+      },
+      "l0-mlp-bwd": {
+        "startMs": 38.028447
+      },
+      "l0-attn-bwd-ag": {
+        "startMs": 38.028447,
+        "durationMs": 2.986192,
+        "description": "L0 MLP backward prefetches the final attention state. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-mlp-rs": {
+        "startMs": 50.103158,
+        "durationMs": 12.485215,
+        "description": "Starts after L0 MLP packing and overlaps L0 attention backward. It is ready earlier but waits behind the serialized L1 attention RS."
+      },
+      "l0-attn-bwd": {
+        "startMs": 42.694878
+      },
+      "embedding-bwd-ag": {
+        "startMs": 42.694878,
+        "durationMs": 0.093177,
+        "description": "Prefetch embedding parameters outside the two-layer puzzle. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-attn-rs": {
+        "startMs": 62.588373,
+        "durationMs": 5.922384,
+        "description": "Shard L0 attention gradients after their flat-gradient pack. It is ready earlier but waits behind the serialized L0 MLP RS."
+      },
+      "embedding-boundary": {
+        "startMs": 47.657373
+      },
+      "embedding-rs": {
+        "startMs": 68.537349,
+        "durationMs": 0.136353,
+        "description": "The final embedding RS closes the captured window. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      }
+    }
+  }
+}

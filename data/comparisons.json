@@ -1,0 +1,739 @@
+{
+  "comparisons": [
+    {
+      "id": "sync-vs-async-tp",
+      "order": 1,
+      "section": "Compare strategies",
+      "prerequisites": [
+        "tensor-parallel-dense",
+        "tensor-parallel-async"
+      ],
+      "title": "Where did the TP barrier go?",
+      "summary": "Compare a synchronous TP boundary with a chunked async TP micro-pipeline.",
+      "intro": "The left trace ends local MLP work with a collective boundary. The right trace splits activation movement and gate/up GEMMs into smaller pieces so communication for one chunk can sit next to compute for another.",
+      "caveat": "The panels show different parts of the TP implementation. Use them to compare dependencies and synchronization, not as a direct latency benchmark.",
+      "tags": [
+        "Tensor Parallel",
+        "Async",
+        "Overlap"
+      ],
+      "scaleMs": 0.75,
+      "left": {
+        "label": "Synchronous TP",
+        "taskId": "tensor-parallel-dense",
+        "startMs": 2.2,
+        "endMs": 2.95,
+        "tracks": [
+          "compute",
+          "tp-comm"
+        ],
+        "caption": "A row-parallel MLP produces a partial output, followed by the reduction that reconstructs the replicated residual."
+      },
+      "right": {
+        "label": "Async TP micro-pipeline",
+        "taskId": "tensor-parallel-async",
+        "startMs": 0.32,
+        "endMs": 0.704,
+        "tracks": [
+          "stream-a",
+          "stream-b",
+          "p2p"
+        ],
+        "caption": "Peer fetches and sub-GEMMs are decomposed into chunk-sized waves, followed by an explicit join."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "What transformation creates overlap between activation movement and the following gate/up projection?",
+          "options": [
+            {
+              "id": "decompose",
+              "label": "Split communication and GEMM into chunk-sized waves, then pipeline the waves."
+            },
+            {
+              "id": "stream-only",
+              "label": "Place the unchanged all-gather on another CUDA stream without changing the GEMM."
+            },
+            {
+              "id": "delay",
+              "label": "Delay all communication until every gate/up GEMM has completed."
+            }
+          ],
+          "answerOptionId": "decompose",
+          "nudge": "A dependent full-tensor GEMM still waits even if the unchanged collective uses another stream.",
+          "explanation": "Async TP decomposes both the activation movement and the consumer GEMM. A fetched chunk can feed one sub-GEMM while another chunk is moving."
+        },
+        {
+          "prompt": "Which compute block makes the synchronous MLP output reduction ready?",
+          "side": "left",
+          "answerBlockId": "l0-mlp-fwd",
+          "nudge": "Look immediately before the MLP output all-reduce on the communication track.",
+          "explanation": "The row-parallel down projection produces only a partial residual contribution. Its all-reduce cannot begin until that local MLP output exists."
+        },
+        {
+          "prompt": "Which transfer must complete before the rank 2 chunk GEMMs can start?",
+          "side": "right",
+          "answerBlockId": "fetch-2",
+          "nudge": "Follow the rank number from the peer-fetch track to the next compute wave.",
+          "explanation": "Chunk 2 compute consumes rank 2's activation slice. The fetch overlaps the tail of chunk 1 compute, but chunk 2 still waits for that transfer to finish."
+        },
+        {
+          "prompt": "Which block forms the synchronization boundary before the final SwiGLU activation?",
+          "side": "right",
+          "answerBlockId": "join",
+          "nudge": "Find the fixed block after the last chunk GEMMs and before the activation.",
+          "explanation": "The micro-pipeline hides peer copies, but its chunk results must still be joined before the elementwise SwiGLU activation can consume the complete gate and up tensors."
+        }
+      ]
+    },
+    {
+      "id": "layer-vs-granular-fsdp",
+      "order": 3,
+      "section": "Compare strategies",
+      "prerequisites": [
+        "fsdp-dense",
+        "fsdp-dense-granular"
+      ],
+      "title": "When is an FSDP gradient ready?",
+      "summary": "Compare one FSDP unit per layer with separate attention and MLP units.",
+      "intro": "Both traces run the same two-layer dense surrogate. The difference is the FSDP wrapping boundary: a whole layer on the left, attention and MLP submodules on the right.",
+      "caveat": "Finer wrapping does not remove parameter or gradient bytes. It changes when a complete reducible gradient becomes available and increases the number of collectives.",
+      "tags": [
+        "FSDP",
+        "Granularity",
+        "Readiness"
+      ],
+      "scaleMs": 12.5,
+      "left": {
+        "label": "Layer-level FSDP",
+        "taskId": "fsdp-dense",
+        "startMs": 12,
+        "endMs": 24.3,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "fsdp-rs"
+        ],
+        "caption": "One FSDP communication group covers the complete transformer layer."
+      },
+      "right": {
+        "label": "Attention + MLP FSDP units",
+        "taskId": "fsdp-dense-granular",
+        "startMs": 11.1,
+        "endMs": 22.3,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "fsdp-rs"
+        ],
+        "caption": "Attention and MLP use separate FSDP communication groups."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "What determines the earliest point at which an FSDP reduce-scatter may launch?",
+          "options": [
+            {
+              "id": "group-ready",
+              "label": "Every parameter gradient in that FSDP communication group is complete."
+            },
+            {
+              "id": "first-gradient",
+              "label": "The first parameter gradient in the layer becomes available."
+            },
+            {
+              "id": "loss",
+              "label": "The root loss backward kernel finishes, regardless of wrapping boundaries."
+            }
+          ],
+          "answerOptionId": "group-ready",
+          "nudge": "FSDP reduces one communication group, not whichever individual gradient arrives first.",
+          "explanation": "The wrapping boundary defines the communication group. Splitting MLP and attention creates two independently ready gradients and an earlier MLP reduce-scatter."
+        },
+        {
+          "prompt": "Which reduction waits for the complete layer gradient in the layer-level trace?",
+          "side": "left",
+          "answerBlockId": "l1-rs",
+          "nudge": "Find the reduction that starts only after both layer 1 backward sublayers.",
+          "explanation": "Attention and MLP share one FSDP unit, so the flat layer gradient is incomplete until attention backward finishes. Only then can the layer reduce-scatter launch."
+        },
+        {
+          "prompt": "Which reduction can launch earlier after splitting the layer into two FSDP units?",
+          "side": "right",
+          "answerBlockId": "l1-mlp-rs",
+          "nudge": "Look for a reduce-scatter that begins as soon as MLP backward completes.",
+          "explanation": "The MLP parameters form their own FSDP unit. Once MLP backward has produced that unit's complete gradient, its reduce-scatter no longer needs to wait for attention backward."
+        },
+        {
+          "prompt": "Which compute block overlaps the earlier MLP gradient reduction?",
+          "side": "right",
+          "answerBlockId": "l1-attn-bwd",
+          "nudge": "Compare the compute and reduce-scatter tracks over the same horizontal interval.",
+          "explanation": "Layer 1 attention backward runs while the MLP gradient reduce-scatter is in flight. This is the overlap opportunity created by the finer readiness boundary."
+        }
+      ]
+    },
+    {
+      "id": "moe-fsdp-with-vs-without-ep",
+      "order": 4,
+      "section": "Compare strategies",
+      "prerequisites": [
+        "fsdp-moe",
+        "fsdp-moe-ep"
+      ],
+      "title": "What changes when experts are partitioned with EP?",
+      "summary": "Compare full expert materialization with expert partitioning across EP ranks.",
+      "intro": "Both layouts retain the same total expert model and the same persistent expert shard per rank. What changes is the expert ownership set materialized by each rank and the process group over which that set is sharded.",
+      "caveat": "Compare per-rank materialization and traffic, not aggregate model size. Dense parameters remain FSDP=8 in both panels.",
+      "tags": [
+        "MoE",
+        "FSDP",
+        "Expert Parallel"
+      ],
+      "scaleMs": 26.5,
+      "left": {
+        "label": "Expert FSDP, EP=1",
+        "taskId": "fsdp-moe",
+        "startMs": 2,
+        "endMs": 28.1,
+        "tracks": [
+          "compute",
+          "fsdp-ag"
+        ],
+        "caption": "Expert parameters are sharded over the complete eight-rank expert FSDP group."
+      },
+      "right": {
+        "label": "Expert FSDP + EP",
+        "taskId": "fsdp-moe-ep",
+        "startMs": 2.1,
+        "endMs": 15.9,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "ep-a2a"
+        ],
+        "caption": "Expert ownership is partitioned across EP coordinates and sharded within each expert FSDP subgroup."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "Why can the per-rank expert all-gather be smaller with EP even though the full model has not changed?",
+          "options": [
+            {
+              "id": "ownership",
+              "label": "Each EP coordinate materializes only its owned experts, using a smaller expert-FSDP subgroup."
+            },
+            {
+              "id": "compression",
+              "label": "EP compresses the same full expert tensor before the all-gather."
+            },
+            {
+              "id": "fewer-parameters",
+              "label": "Enabling EP deletes expert parameters that are not selected by the current batch."
+            }
+          ],
+          "answerOptionId": "ownership",
+          "nudge": "The model and persistent per-rank shard are unchanged; reason about which expert set each rank must materialize.",
+          "explanation": "At EP=1, each rank materializes all 128 experts over FSDP=8. At EP=4, each rank materializes its 32 owned experts over expert-FSDP=2; all EP groups together still cover the full model."
+        },
+        {
+          "prompt": "Without EP, which communication gates layer 0 grouped expert compute?",
+          "side": "left",
+          "answerBlockId": "l0-expert-fwd-ag",
+          "nudge": "Find the long parameter communication before the expert-weight copy-out and grouped GEMM.",
+          "explanation": "The grouped expert GEMM needs materialized expert weights. At EP=1, that means gathering the full expert parameter set sharded across the expert FSDP group."
+        },
+        {
+          "prompt": "With EP, which local operation must wait for dispatch to deliver remote tokens?",
+          "side": "right",
+          "answerBlockId": "layer0-permute",
+          "nudge": "Look immediately after the dispatch payload all-to-all.",
+          "explanation": "The destination-local permutation groups received activations by local expert. It cannot run until the dispatch payload has arrived."
+        },
+        {
+          "prompt": "Which operation is the first consumer of both ready expert weights and expert-grouped activations?",
+          "side": "right",
+          "answerBlockId": "layer0-swiglu-fwd",
+          "nudge": "Choose the expert compute block after parameter copy-out, dispatch, and local permutation.",
+          "explanation": "Grouped SwiGLU is where the two dependency paths meet: expert weights must be materialized, and routed activations must have arrived and been grouped for the local experts."
+        }
+      ]
+    },
+    {
+      "id": "ep-forward-vs-backward",
+      "order": 5,
+      "section": "Compare strategies",
+      "prerequisites": [
+        "moe-expert-parallel",
+        "moe-expert-parallel-backward"
+      ],
+      "title": "Why does combine backward look like dispatch?",
+      "summary": "Follow the adjoints of EP dispatch, combine, permute, and unpermute through MoE backward.",
+      "intro": "Backward traverses the expert-parallel data path in reverse. Each forward all-to-all has an adjoint that connects the same rank owners in the opposite data-flow direction. Identify those adjoints from tensor ownership and execution order, not from operation names.",
+      "caveat": "Both panels are cropped from the same measured TorchTitan EP=4 trace. FSDP parameter and gradient tracks are deliberately hidden here so the activation all-to-alls and local layout inverses remain legible.",
+      "tags": [
+        "MoE",
+        "Expert Parallel",
+        "Backward"
+      ],
+      "scaleMs": 8.5,
+      "left": {
+        "label": "Layer 1 MoE forward",
+        "taskId": "fsdp-moe-ep",
+        "startMs": 19.3,
+        "endMs": 24.4,
+        "tracks": [
+          "compute",
+          "ep-a2a"
+        ],
+        "blockLabels": {
+          "layer1-dispatch-meta": "Counts",
+          "layer1-dispatch": "Dispatch",
+          "layer1-permute": "Permute",
+          "layer1-swiglu-fwd": "SwiGLU FWD",
+          "layer1-unpermute": "Unpermute",
+          "layer1-combine": "Combine"
+        },
+        "caption": "Dispatch moves activations to expert owners; combine returns expert outputs to token owners."
+      },
+      "right": {
+        "label": "Layer 1 MoE backward",
+        "taskId": "fsdp-moe-ep",
+        "startMs": 32.13,
+        "endMs": 40.3,
+        "tracks": [
+          "compute",
+          "ep-a2a"
+        ],
+        "blockLabels": {
+          "layer1-dy-a2a": "A2A A",
+          "layer1-unpermute-bwd": "Unperm.",
+          "layer1-swiglu-bwd": "SwiGLU BWD",
+          "layer1-permute-bwd": "Perm. BWD",
+          "layer1-dx-a2a": "A2A B"
+        },
+        "caption": "Two all-to-alls move output and input gradients across the EP group. Determine which forward collective each one reverses."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "Forward combine returns expert outputs to token owners. Where must its backward send output gradients?",
+          "options": [
+            {
+              "id": "to-experts",
+              "label": "From token owners back to expert owners."
+            },
+            {
+              "id": "to-tokens",
+              "label": "From expert owners to token owners again."
+            },
+            {
+              "id": "local",
+              "label": "Nowhere; combine backward is always rank-local."
+            }
+          ],
+          "answerOptionId": "to-experts",
+          "nudge": "An adjoint returns gradients to the owners of the forward input.",
+          "explanation": "Combine backward sends dY to expert owners, matching the rank direction of forward dispatch. Dispatch backward later sends dX back to token owners."
+        },
+        {
+          "prompt": "Forward combine returns expert outputs to token owners. Which all-to-all reverses that movement in backward?",
+          "side": "right",
+          "answerBlockId": "layer1-dy-a2a",
+          "nudge": "Forward combine returns expert outputs to token owners. Its adjoint must send output gradients in the opposite direction.",
+          "explanation": "Combine backward sends dY from token owners to expert owners. That is the same rank-to-rank direction as forward dispatch, but it carries output gradients rather than routed activations."
+        },
+        {
+          "prompt": "Which local layout operation runs immediately after combine backward delivers dY?",
+          "side": "right",
+          "answerBlockId": "layer1-unpermute-bwd",
+          "nudge": "Choose the first compute block after the dY all-to-all.",
+          "explanation": "Forward unpermute converts expert-major outputs toward the combine layout. Its backward recreates the expert-major gradient layout consumed by grouped expert backward."
+        },
+        {
+          "prompt": "Forward dispatch sends expert inputs to expert owners. Which all-to-all reverses that movement in backward?",
+          "side": "right",
+          "answerBlockId": "layer1-dx-a2a",
+          "nudge": "After grouped expert backward and the inverse local permutation, find the collective that returns input gradients to token owners.",
+          "explanation": "Dispatch backward sends dX from expert owners back to token owners. Its direction therefore matches forward combine, although its payload is the gradient of routed expert inputs."
+        },
+        {
+          "prompt": "Which local inverse prepares dX for dispatch backward?",
+          "side": "right",
+          "answerBlockId": "layer1-permute-bwd",
+          "nudge": "Look immediately before the dX all-to-all.",
+          "explanation": "Forward post-dispatch permutation groups activations by local expert. Its backward undoes that grouping before dX is sent back through the dispatch collective."
+        }
+      ]
+    },
+    {
+      "id": "expert-wait-nvlink-vs-ib",
+      "order": 6,
+      "section": "Diagnose stalls",
+      "prerequisites": [
+        "fsdp-moe-ep"
+      ],
+      "title": "Why does expert backward stop here?",
+      "summary": "Diagnose an exposed expert-weight wait as FSDP moves from NVLink to InfiniBand.",
+      "intro": "These windows preserve the same layer 1 MoE backward dependencies while changing only FSDP communication time. Determine which dependency moves onto the critical path in the cross-node model.",
+      "caveat": "The right panel is an analytical NDR400 variant. It preserves the measured compute and EP durations and changes only FSDP collective timing to 42.5 GB/s effective bandwidth per rank.",
+      "tags": [
+        "FSDP",
+        "Expert Parallel",
+        "Critical path"
+      ],
+      "scaleMs": 31,
+      "left": {
+        "label": "NVLink baseline",
+        "taskId": "fsdp-moe-ep",
+        "startMs": 25.5,
+        "endMs": 42.5,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "ep-a2a",
+          "fsdp-rs"
+        ],
+        "caption": "Measured NVLink timing for the layer 1 backward dependency window."
+      },
+      "right": {
+        "label": "Modeled cross-node FSDP",
+        "taskId": "fsdp-moe-ep",
+        "variantId": "ib",
+        "startMs": 43,
+        "endMs": 73.5,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "ep-a2a",
+          "fsdp-rs"
+        ],
+        "caption": "The same compute and EP timing with analytically scaled FSDP communication."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "When does a prefetched parameter all-gather become an exposed compute stall?",
+          "options": [
+            {
+              "id": "late",
+              "label": "Its consumer becomes ready before the all-gather has materialized the parameters."
+            },
+            {
+              "id": "starts",
+              "label": "As soon as the all-gather starts on a non-default CUDA stream."
+            },
+            {
+              "id": "overlap",
+              "label": "Whenever any compute overlaps the collective."
+            }
+          ],
+          "answerOptionId": "late",
+          "nudge": "Overlap is useful until the consumer reaches first use and the parameters are still unavailable.",
+          "explanation": "Prefetch is hidden only while useful predecessor compute lasts. Once the consumer is ready, the unfinished all-gather becomes critical-path wait."
+        },
+        {
+          "prompt": "Which communication is still in flight when the local token-restore backward kernel finishes?",
+          "side": "right",
+          "answerBlockId": "layer1-expert-bwd-ag",
+          "nudge": "Compare the end of L1 Token Restore BWD with the communication still running on the FSDP parameter all-gather track.",
+          "explanation": "L1 Token Restore BWD ends at 50.25 ms, while the layer 1 expert-weight all-gather continues to 61.18 ms. The later dY all-to-all is a separate stage: it is the backward of the forward combine collective, not this local restore kernel."
+        },
+        {
+          "prompt": "Which compute operation runs first once the layer 1 expert weights become available?",
+          "side": "right",
+          "answerBlockId": "layer1-expert-bwd-copyout",
+          "nudge": "Find the first compute block beginning exactly where the exposed wait ends.",
+          "explanation": "Expert parameter copy-out resumes the compute path as soon as the all-gather is complete. Dispatch-backward and grouped expert GEMMs follow from those materialized weights."
+        },
+        {
+          "prompt": "Which later expert prefetch overlaps layer 1 expert backward instead of blocking it?",
+          "side": "right",
+          "answerBlockId": "layer0-expert-bwd-prefetch",
+          "nudge": "Find the next-layer expert all-gather running alongside layer 1 expert backward.",
+          "explanation": "Layer 0 expert weights are prefetched while layer 1 dispatch-backward and expert GEMMs run. Unlike the layer 1 all-gather, this communication is early enough to be partly hidden by useful compute."
+        }
+      ]
+    },
+    {
+      "id": "ddp-terminal-vs-buckets",
+      "order": 2,
+      "section": "Compare strategies",
+      "prerequisites": [
+        "ddp-terminal",
+        "ddp-bucketed"
+      ],
+      "title": "When does DDP communication become ready?",
+      "summary": "Compare one model-sized reducer bucket with nine measured readiness-driven buckets.",
+      "intro": "Both runs average the same 893,428,736 BF16 gradient bytes across the same eight H100s. Only reducer bucket construction changes. Predict the readiness rule, then inspect where communication begins.",
+      "caveat": "This capture also shows contention: bucketed backward envelopes and all-reduces are slower while they overlap. The synchronized step improves by only 0.57 ms even though the exposed communication tail falls from 4.00 ms to 0.93 ms.",
+      "tags": [
+        "Data Parallel",
+        "Gradient Buckets",
+        "Overlap"
+      ],
+      "scaleMs": 21,
+      "left": {
+        "label": "One terminal bucket",
+        "taskId": "ddp-terminal",
+        "startMs": 7.8,
+        "endMs": 28.610728,
+        "tracks": [
+          "compute",
+          "ddp-comm"
+        ],
+        "caption": "All model gradients are assigned to one reducer bucket."
+      },
+      "right": {
+        "label": "Nine reducer buckets",
+        "taskId": "ddp-bucketed",
+        "startMs": 7.8,
+        "endMs": 28.203286,
+        "tracks": [
+          "compute",
+          "ddp-comm"
+        ],
+        "caption": "The same gradients are divided among nine measured reducer buckets."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "When may DDP launch the all-reduce for one reducer bucket?",
+          "options": [
+            {
+              "id": "last-gradient",
+              "label": "When the final outstanding parameter gradient assigned to that bucket is ready."
+            },
+            {
+              "id": "first-gradient",
+              "label": "When any one parameter gradient in the bucket is ready."
+            },
+            {
+              "id": "backward-end",
+              "label": "Only after autograd has finished the complete model backward, regardless of buckets."
+            }
+          ],
+          "answerOptionId": "last-gradient",
+          "nudge": "A collective cannot reduce a bucket while part of that bucket is still missing.",
+          "explanation": "A bucket launches at its last-gradient readiness point. Smaller buckets create earlier launch opportunities, although exact membership is capture- and configuration-specific."
+        },
+        {
+          "prompt": "In the terminal schedule, which collective cannot start until every displayed backward block has completed?",
+          "side": "left",
+          "answerBlockId": "terminal-gradient-ar",
+          "nudge": "Find the only communication block, after embedding and bucket finalization.",
+          "explanation": "All gradients share one model-sized bucket. The reducer cannot launch its all-reduce until embedding backward supplies the final gradient."
+        },
+        {
+          "prompt": "Which bucket is the first to overlap layer 1 SwiGLU backward?",
+          "side": "right",
+          "answerBlockId": "bucket-output-l1-down",
+          "nudge": "Look for the first communication beginning inside the layer 1 MLP backward envelope.",
+          "explanation": "Output and final-norm gradients are already ready, but bucket 0 launches only when the layer 1 down-projection gradient completes its three-parameter bucket."
+        },
+        {
+          "prompt": "Which all-reduce demonstrates that a reducer bucket may cross a layer boundary?",
+          "side": "right",
+          "answerBlockId": "bucket-cross-layer",
+          "nudge": "Find the bucket whose label mentions both layer 1 normalization and layer 0 MLP.",
+          "explanation": "The L1 attention-norm gradient shares a bucket with the L0 down projection. It waits until that layer 0 gradient becomes ready even though its own backward work finished earlier."
+        }
+      ]
+    },
+    {
+      "id": "fsdp-stream-gaps",
+      "order": 7,
+      "section": "Diagnose stalls",
+      "prerequisites": [
+        "fsdp-dense-granular"
+      ],
+      "title": "Why is the FSDP stream idle?",
+      "summary": "Separate dependency-driven launch gaps from reduce-scatter serialization.",
+      "intro": "The modeled cross-node trace stretches communication while preserving measured launch boundaries. Decide whether each visible gap comes from a dependency that has not fired or work queued behind an earlier collective.",
+      "caveat": "The right panel models granular FSDP over NDR400. Longer collectives make launch timing and stream serialization easier to see; the dependency order comes from the measured granular trace.",
+      "tags": [
+        "FSDP",
+        "Autograd hooks",
+        "Stream serialization"
+      ],
+      "scaleMs": 24,
+      "left": {
+        "label": "Granular FSDP on NVLink",
+        "taskId": "fsdp-dense-granular",
+        "startMs": 10.2,
+        "endMs": 22.3,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "fsdp-rs"
+        ],
+        "caption": "Measured launch boundaries with short NVLink collectives."
+      },
+      "right": {
+        "label": "Granular FSDP on modeled IB",
+        "taskId": "fsdp-dense-granular",
+        "variantId": "ib",
+        "startMs": 21,
+        "endMs": 45,
+        "tracks": [
+          "compute",
+          "fsdp-ag",
+          "fsdp-rs"
+        ],
+        "caption": "The same launch boundaries with analytically scaled FSDP communication."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "Does an idle FSDP all-gather stream necessarily prove general CPU boundedness?",
+          "options": [
+            {
+              "id": "no",
+              "label": "No. The autograd boundary that submits the next prefetch may not have been reached."
+            },
+            {
+              "id": "yes",
+              "label": "Yes. Any idle NCCL stream means the Python thread failed to keep the GPU busy."
+            },
+            {
+              "id": "network",
+              "label": "No. It always means the network has exhausted its bandwidth."
+            }
+          ],
+          "answerOptionId": "no",
+          "nudge": "Distinguish a launch dependency from an already-submitted collective waiting for resources.",
+          "explanation": "FSDP prefetch is submitted at specific module/autograd boundaries. The stream can be idle because the trigger has not fired, even while compute and the CPU are otherwise progressing normally."
+        },
+        {
+          "prompt": "Which compute is autograd still traversing during the gap before the next MLP backward prefetch?",
+          "side": "right",
+          "answerBlockId": "l1-mlp-bwd",
+          "nudge": "Look at the compute track between the end of the L1 attention AG and the start of the L0 MLP AG.",
+          "explanation": "The L1 attention parameters are already available, but autograd is still inside L1 MLP backward. The next prefetch hook has not fired because execution has not entered L1 attention backward yet."
+        },
+        {
+          "prompt": "Which all-gather is launched when autograd finally enters layer 1 attention backward?",
+          "side": "right",
+          "answerBlockId": "l0-mlp-bwd-ag",
+          "nudge": "Find the AG whose start aligns with the beginning of L1 attention backward.",
+          "explanation": "The L1 attention pre-backward boundary launches the L0 MLP parameter prefetch. The earlier gap is therefore a dependency-driven submission gap, not unexplained GPU inactivity."
+        },
+        {
+          "prompt": "Which earlier reduction keeps the ready L1 attention reduction from starting immediately?",
+          "side": "right",
+          "answerBlockId": "l1-mlp-rs",
+          "nudge": "Follow the serialized reduce-scatter track before L1 attention RS begins.",
+          "explanation": "L1 attention gradients become ready when attention backward finishes, but the long L1 MLP reduce-scatter still owns the reduction stream. Attention RS waits for stream availability."
+        }
+      ]
+    },
+    {
+      "id": "cp-rendezvous-skew",
+      "order": 8,
+      "section": "Read multi-rank traces",
+      "prerequisites": [
+        "context-parallel-allgather"
+      ],
+      "title": "Does a longer NCCL bar mean a slower transfer?",
+      "summary": "Compare the same collective across ranks and separate peer wait from payload movement.",
+      "intro": "Both ranks move the same K/V payload, but their NCCL GPU intervals have different start times and widths. Compare the ranks before deciding what the longer interval measures.",
+      "caveat": "Here, “enter the collective” means the NCCL GPU kernel becomes resident and can make progress—not the Python call. PyTorch submits the asynchronous collective at essentially the same host-side time on all ranks.",
+      "tags": [
+        "NCCL",
+        "Multi-rank",
+        "Wait vs transfer"
+      ],
+      "scaleMs": 3.1,
+      "left": {
+        "label": "Rank 0",
+        "taskId": "context-parallel-multirank",
+        "startMs": 2.2,
+        "endMs": 5.25,
+        "tracks": [
+          "r0-compute",
+          "r0-comm"
+        ],
+        "blockLabels": {
+          "r0-local-attention": "Local FA",
+          "r0-local-merge": "Merge",
+          "r0-kv-wait": "Wait for gathered K/V",
+          "r0-remote-kv-prep": "K/V view",
+          "r0-remote-attention": "Remote K/V",
+          "r0-kv-allgather": "K/V AG"
+        },
+        "caption": "Rank 0 GPU activity over the shared K/V all-gather window."
+      },
+      "right": {
+        "label": "Rank 3",
+        "taskId": "context-parallel-multirank",
+        "startMs": 2.2,
+        "endMs": 5.25,
+        "tracks": [
+          "r3-compute",
+          "r3-comm"
+        ],
+        "blockLabels": {
+          "r3-local-attention": "Local FA",
+          "r3-local-merge": "Merge",
+          "r3-kv-wait": "Wait for gathered K/V",
+          "r3-remote-kv-prep": "K/V view",
+          "r3-remote-attention": "Remote K/V",
+          "r3-kv-allgather": "K/V AG"
+        },
+        "caption": "Rank 3 GPU activity for the same payload and collective instance."
+      },
+      "questions": [
+        {
+          "kind": "choice",
+          "stage": "Predict",
+          "prompt": "Can one rank's NCCL GPU-kernel duration be treated as pure payload transfer time?",
+          "options": [
+            {
+              "id": "no",
+              "label": "No. It may include peer rendezvous, progress wait, transfer, and resource contention."
+            },
+            {
+              "id": "yes",
+              "label": "Yes. NCCL kernel start and end always isolate bytes moving on the wire."
+            },
+            {
+              "id": "only-long",
+              "label": "Only when that rank shows the longest collective interval."
+            }
+          ],
+          "answerOptionId": "no",
+          "nudge": "Compare equal payloads across ranks and ask whether their GPU intervals begin together.",
+          "explanation": "The NCCL kernel can be resident before peers make collective progress. Multi-rank timing is required to separate likely wait from payload movement; one bar is not a direct bandwidth measurement."
+        },
+        {
+          "prompt": "Which all-gather would look like a 2.08 ms network transfer if you inspected only one rank?",
+          "side": "right",
+          "answerBlockId": "r3-kv-allgather",
+          "nudge": "Choose the longer NCCL interval on rank 3.",
+          "explanation": "Rank 3 shows a 2.08 ms NCCL interval, but it moves the same payload as rank 0 and finishes at the same time. Treating the complete bar as wire time would underestimate effective bandwidth."
+        },
+        {
+          "prompt": "Which peer all-gather starts about 0.75 ms later, proving that rank 3's extra width is not extra payload transfer?",
+          "side": "left",
+          "answerBlockId": "r0-kv-allgather",
+          "nudge": "Compare the two communication tracks rather than the compute tracks.",
+          "explanation": "Rank 0's NCCL kernel starts at 3.013 ms, while rank 3's starts at 2.260 ms; both finish near 4.35 ms. Rank 3's early portion therefore includes waiting for peer-side collective progress, not additional bytes moving."
+        },
+        {
+          "prompt": "Which rank 3 compute cannot begin until the gathered remote K/V is available?",
+          "side": "right",
+          "answerBlockId": "r3-remote-attention",
+          "nudge": "Choose the first compute block after the rank 3 all-gather completes.",
+          "explanation": "The first remote-shard FlashAttention launches only after the all-gather completes and a gathered K/V view is prepared. Unlike the NCCL start skew, this is a real data dependency; the gray compute-track interval before it is exposed communication wait."
+        }
+      ]
+    }
+  ]
+}

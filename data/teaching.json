@@ -1,0 +1,983 @@
+{
+  "single-gpu-forward-backward": {
+    "summary": "Recover one training step from forward dependencies and reverse-mode order.",
+    "objective": "Order attention, MLP, loss, backward, and the optimizer step.",
+    "catalogTags": [
+      "Single GPU",
+      "Dense"
+    ],
+    "teachingPoints": [
+      "Backward starts at the scalar loss.",
+      "The optimizer can update parameters only after every required gradient is available."
+    ],
+    "implementationSketch": {
+      "label": "Displayed training dependency",
+      "code": [
+        "h = attention(x)",
+        "h = mlp(h)",
+        "loss = objective(h)",
+        "loss.backward()",
+        "optimizer.step()"
+      ],
+      "note": "Gradient clearing and input loading are outside the displayed trace."
+    },
+    "insight": "Backward runs MLP before attention; the optimizer waits for both.",
+    "hint": "Run forward through the loss, then reverse MLP and attention.",
+    "explanation": "backward starts at the loss, visits MLP before attention, then releases the optimizer.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "loss",
+          "toBlockId": "mlp-bwd",
+          "label": "Loss releases backward",
+          "explanation": "Reverse mode starts from the scalar loss, so MLP backward cannot begin before the loss exists."
+        },
+        {
+          "fromBlockId": "mlp-bwd",
+          "toBlockId": "attn-bwd",
+          "label": "Gradients flow in reverse",
+          "explanation": "Attention backward consumes the activation gradient produced by MLP backward."
+        },
+        {
+          "fromBlockId": "attn-bwd",
+          "toBlockId": "optimizer",
+          "label": "Gradients gate the update",
+          "explanation": "The optimizer waits until the final parameter gradients have been produced."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Reverse mode",
+        "definition": "Propagate gradients from the scalar loss toward earlier operations in reverse dependency order."
+      },
+      {
+        "term": "Compute envelope",
+        "definition": "One teaching block aggregates the kernels belonging to a complete attention or MLP sublayer."
+      }
+    ]
+  },
+  "single-gpu-moe": {
+    "summary": "Reconstruct the local sparse-MLP path around grouped GEMM.",
+    "objective": "Order the local MoE path from routing to weighted token restoration.",
+    "catalogTags": [
+      "Single GPU",
+      "MoE"
+    ],
+    "teachingPoints": [
+      "Permutation is a local token-major to expert-major layout transform; it is not communication.",
+      "Routing weights are applied while expert outputs are scattered back to token order."
+    ],
+    "implementationSketch": {
+      "label": "Local MoE forward",
+      "code": [
+        "score, expert, counts = router(x)",
+        "x_e, order = permute(x, expert)",
+        "y_e = grouped_swiglu(x_e, weights, counts)",
+        "y = unpermute(y_e, order, score)"
+      ],
+      "note": "The router includes score normalization and top-k selection."
+    },
+    "insight": "Grouped GEMM needs expert-major tokens. Its outputs must return to token order.",
+    "hint": "Expert-major input must exist before grouped GEMM; token order is restored afterward.",
+    "explanation": "tokens are grouped by expert for GEMM, then restored and weighted.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "topk",
+          "toBlockId": "permute",
+          "label": "Routes define the layout",
+          "explanation": "Top-k expert assignments are required before token copies can be grouped by expert."
+        },
+        {
+          "fromBlockId": "permute",
+          "toBlockId": "experts",
+          "label": "Expert layout gates GEMM",
+          "explanation": "Grouped GEMM expects contiguous expert-major token groups, not the original token order."
+        },
+        {
+          "fromBlockId": "experts",
+          "toBlockId": "unpermute",
+          "label": "Expert outputs restore tokens",
+          "explanation": "Outputs can be weighted and scattered back only after expert compute has finished."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Grouped GEMM",
+        "definition": "Apply many expert-specific matrices while allowing each expert to receive a different token count."
+      },
+      {
+        "term": "Unpermute",
+        "definition": "Weight expert outputs and scatter-add them to their original token positions."
+      }
+    ]
+  },
+  "moe-expert-parallel": {
+    "summary": "Insert expert dispatch and combine around a local MoE data path.",
+    "objective": "Add dispatch and combine to the local MoE forward path.",
+    "catalogTags": [
+      "MoE",
+      "Expert Parallel"
+    ],
+    "teachingPoints": [
+      "Dispatch sends routed activations to expert owners; combine returns expert outputs to token owners.",
+      "EP adds rank exchange but does not eliminate local permutation and unpermutation."
+    ],
+    "implementationSketch": {
+      "label": "Expert-parallel MoE forward",
+      "code": [
+        "score, expert, counts = router(x)",
+        "routed, source_order = route_tokens(x, expert)",
+        "remote = all_to_all_single_autograd(",
+        "    routed, recv_splits, send_splits, ep_group)",
+        "x_e, local_order = permute(remote, local_counts)",
+        "y_e = grouped_swiglu(",
+        "    x_e, local_weights, local_counts)",
+        "remote = unpermute(y_e, local_order)",
+        "routed = all_to_all_single_autograd(",
+        "    remote, send_splits, recv_splits, ep_group)",
+        "y = scatter_weighted(routed, source_order, score)"
+      ],
+      "note": "TorchTitan performs both source routing order and destination-local expert grouping; the puzzle folds the latter into the expert block."
+    },
+    "insight": "EP moves activations between token owners and expert owners. Local permutation is still required.",
+    "hint": "Dispatch consumes routed token groups. Combine cannot begin until expert outputs exist.",
+    "explanation": "dispatch moves inputs to expert owners; combine returns outputs before token restoration.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "permute",
+          "toBlockId": "dispatch",
+          "label": "Packed tokens feed dispatch",
+          "explanation": "Dispatch needs the source-side routed token buffer before it can exchange activations."
+        },
+        {
+          "fromBlockId": "metadata",
+          "toBlockId": "dispatch",
+          "label": "Split counts gate payload",
+          "explanation": "This measured implementation exchanges dynamic per-peer counts before launching the payload all-to-all."
+        },
+        {
+          "fromBlockId": "experts",
+          "toBlockId": "combine",
+          "label": "Expert outputs feed combine",
+          "explanation": "Combine cannot return activations to token owners until local expert compute has produced them."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Dispatch",
+        "definition": "Send routed token activations to ranks that own the selected experts."
+      },
+      {
+        "term": "Dynamic splits",
+        "definition": "Per-peer message sizes determined by the current routing assignment."
+      }
+    ]
+  },
+  "moe-expert-parallel-backward": {
+    "summary": "Reverse expert-parallel combine and dispatch through grouped expert backward.",
+    "objective": "Order the EP backward path from dY exchange to dX return.",
+    "catalogTags": [
+      "MoE",
+      "Expert Parallel",
+      "Backward"
+    ],
+    "teachingPoints": [
+      "Combine backward sends dY from token owners to expert owners, the same rank direction as forward dispatch.",
+      "Dispatch backward returns dX from expert owners to token owners, the same rank direction as forward combine."
+    ],
+    "implementationSketch": {
+      "label": "Expert-parallel MoE adjoints",
+      "code": [
+        "dy_expert = combine_backward(dy_token)",
+        "dy_grouped = unpermute_backward(dy_expert)",
+        "dx_grouped, dw = grouped_swiglu_backward(dy_grouped)",
+        "dx_dispatch = permute_backward(dx_grouped)",
+        "dx_token = dispatch_backward(dx_dispatch)"
+      ],
+      "note": "The two backward all-to-alls invert tensor ownership; they are not named after their forward rank direction."
+    },
+    "insight": "Backward reverses both the local layout changes and tensor ownership.",
+    "hint": "Send dY toward expert owners first; return dX toward token owners last.",
+    "explanation": "dY moves to expert owners before local backward; dX returns to token owners afterward.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "combine-bwd-dy",
+          "toBlockId": "unpermute-bwd",
+          "label": "dY returns to expert owners",
+          "explanation": "The backward of forward combine first moves output gradients from token owners back to expert owners."
+        },
+        {
+          "fromBlockId": "unpermute-bwd",
+          "toBlockId": "experts-bwd",
+          "label": "Expert-major dY gates backward",
+          "explanation": "Grouped expert backward needs output gradients restored to expert-major order."
+        },
+        {
+          "fromBlockId": "permute-bwd",
+          "toBlockId": "dispatch-bwd-dx",
+          "label": "dX returns to token owners",
+          "explanation": "After local layout inversion, dispatch backward sends expert-input gradients back to their token-owner ranks."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Combine backward",
+        "definition": "The adjoint of the collective that returned expert outputs to token owners."
+      },
+      {
+        "term": "Dispatch backward",
+        "definition": "The adjoint of the collective that sent expert inputs to expert owners."
+      }
+    ]
+  },
+  "tensor-parallel-dense": {
+    "summary": "Place replicated-residual TP reductions around one dense transformer layer.",
+    "objective": "Place the four all-reduces in one TP layer: two in forward and two in backward.",
+    "catalogTags": [
+      "Dense",
+      "Tensor Parallel"
+    ],
+    "teachingPoints": [
+      "Row-parallel forward produces partial outputs, so attention and MLP each end with an all-reduce.",
+      "Column-parallel backward produces partial input gradients, which are summed before RMSNorm backward."
+    ],
+    "implementationSketch": {
+      "label": "Replicated-residual TP layer",
+      "code": [
+        "x_n = rms_norm(x)",
+        "q, k, v = column_parallel_qkv(x_n)",
+        "a = flash_attention(q, k, v)",
+        "x = x + all_reduce(row_parallel_o(a))",
+        "m = rms_norm(x)",
+        "gate, up = column_parallel_gate_up(m)",
+        "local = row_parallel_down(silu(gate) * up)",
+        "x = x + all_reduce(local)"
+      ],
+      "note": "Autograd produces matching input-gradient reductions for the two column-parallel projections."
+    },
+    "insight": "Row-parallel forward outputs and column-parallel input gradients are partial and must be summed.",
+    "hint": "Find the partial output after each forward sublayer and the partial dX before each RMSNorm backward.",
+    "explanation": "the two forward outputs and two backward input gradients are reduced before their consumers.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l0-attn-fwd",
+          "toBlockId": "l0-attn-fwd-ar",
+          "label": "Partial attention output is reduced",
+          "explanation": "The row-parallel output projection produces only a partial residual contribution, so the residual path waits for the all-reduce."
+        },
+        {
+          "fromBlockId": "l0-mlp-fwd",
+          "toBlockId": "l0-mlp-fwd-ar",
+          "label": "Partial MLP output is reduced",
+          "explanation": "The row-parallel down projection must be summed across TP ranks before the replicated residual is complete."
+        },
+        {
+          "fromBlockId": "l0-mlp-bwd-ar",
+          "toBlockId": "l0-mlp-norm-bwd",
+          "label": "Reconstructed dX gates norm",
+          "explanation": "RMSNorm backward consumes the complete residual gradient, so it waits for the column-parallel input-gradient all-reduce."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Column parallel",
+        "definition": "Shard output features; forward is local, while backward input gradients are partial."
+      },
+      {
+        "term": "Row parallel",
+        "definition": "Shard input features; forward outputs are partial and must be summed."
+      }
+    ]
+  },
+  "tensor-sequence-parallel": {
+    "summary": "Reconstruct TP layout transitions with a sequence-sharded residual stream.",
+    "objective": "Place the all-gather/reduce-scatter pair around attention and MLP in forward and backward.",
+    "catalogTags": [
+      "Dense",
+      "Tensor Parallel",
+      "Sequence Parallel"
+    ],
+    "teachingPoints": [
+      "RMSNorm and residual operations stay sequence-sharded; TP compute consumes gathered token activations.",
+      "Autograd reverses each layout transition: output-gradient all-gather, local backward, input-gradient reduce-scatter."
+    ],
+    "implementationSketch": {
+      "label": "TP + sequence-parallel boundary",
+      "code": [
+        "x_s = rms_norm(x_shard)",
+        "x_full = all_gather(x_s, dim=sequence)",
+        "y_partial = tp_sublayer(x_full)",
+        "y_shard = reduce_scatter(y_partial, dim=sequence)",
+        "x_shard = x_shard + y_shard"
+      ]
+    },
+    "insight": "Sequence parallel keeps norms and residuals sharded; TP compute uses gathered activations.",
+    "hint": "Forward gathers before compute and reduce-scatters afterward. Backward reverses those layout changes.",
+    "explanation": "each sublayer crosses from sequence-sharded to gathered layout and back.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l0-attn-norm-fwd",
+          "toBlockId": "l0-attn-fwd-ag",
+          "label": "Norm runs on the shard",
+          "explanation": "Sequence parallel keeps RMSNorm local to each token shard; only its output is gathered for TP attention."
+        },
+        {
+          "fromBlockId": "l0-attn-fwd-ag",
+          "toBlockId": "l0-attn-fwd",
+          "label": "Gathered activations gate attention",
+          "explanation": "The TP attention projection cannot consume the complete token slice until the input all-gather finishes."
+        },
+        {
+          "fromBlockId": "l0-attn-fwd",
+          "toBlockId": "l0-attn-fwd-rs",
+          "label": "Reduce-scatter restores the shard",
+          "explanation": "The partial attention output is reduced and returned to the sequence-sharded residual layout."
+        },
+        {
+          "fromBlockId": "l0-mlp-bwd-rs",
+          "toBlockId": "l0-mlp-norm-bwd",
+          "label": "Sharded dX gates norm backward",
+          "explanation": "Backward RMSNorm runs only after the TP input gradient has been reduce-scattered to the local sequence shard."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Sequence-sharded residual",
+        "definition": "Each TP rank retains only its token slice for norms, residuals, and elementwise work."
+      },
+      {
+        "term": "Layout boundary",
+        "definition": "A collective that converts between sequence-sharded and TP-compute layouts."
+      }
+    ]
+  },
+  "tensor-parallel-async": {
+    "summary": "Schedule peer fetches against decomposed SwiGLU gate/up GEMMs.",
+    "objective": "Interleave four activation chunks across two compute streams and the peer-copy stream.",
+    "catalogTags": [
+      "Dense",
+      "Tensor Parallel",
+      "Async"
+    ],
+    "teachingPoints": [
+      "Async TP decomposes gather-plus-matmul so communication for one chunk can overlap compute on another.",
+      "Overlap is not automatically a speedup: decomposition, barriers, and lost fusion can cost more than the hidden transfer."
+    ],
+    "implementationSketch": {
+      "label": "Gather/matmul micro-pipeline",
+      "code": [
+        "current = x_chunk[local_rank]",
+        "current_owner = local_rank",
+        "for owner in remote_owners:",
+        "    next_chunk = peer_fetch_async(owner)",
+        "    g, u = sub_gemm(current, weights)",
+        "    gate[current_owner] = g",
+        "    up[current_owner] = u",
+        "    current = wait(next_chunk)",
+        "    current_owner = owner",
+        "g, u = sub_gemm(current, weights)",
+        "gate[current_owner] = g",
+        "up[current_owner] = u",
+        "y = silu(gate) * up"
+      ],
+      "note": "Dependency pseudocode: TorchInductor emits the chunk GEMMs on alternating symmetric-memory streams."
+    },
+    "insight": "Async TP overlaps one chunk's transfer with another chunk's GEMM.",
+    "hint": "Alternate chunk compute across the two streams while fetching the next remote chunk.",
+    "explanation": "peer copies run beside chunk GEMMs, with a join before final SwiGLU.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "fetch-1",
+          "toBlockId": "chunk-1",
+          "label": "Fetch gates chunk 1",
+          "explanation": "Chunk 1 GEMMs can start as soon as that peer activation slice is available; later fetches continue concurrently."
+        },
+        {
+          "fromBlockId": "fetch-2",
+          "toBlockId": "chunk-2",
+          "label": "Fetch gates chunk 2",
+          "explanation": "Decomposition turns one full-tensor barrier into a sequence of smaller producer-consumer dependencies."
+        },
+        {
+          "fromBlockId": "chunk-3",
+          "toBlockId": "join",
+          "label": "The final chunk gates the join",
+          "explanation": "All gate/up chunk results must exist before the complete tensors can be joined."
+        },
+        {
+          "fromBlockId": "join",
+          "toBlockId": "activation",
+          "label": "Joined tensors gate SwiGLU",
+          "explanation": "The elementwise SwiGLU activation consumes the complete gate and up projections, creating a final synchronization boundary."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Symmetric memory",
+        "definition": "Peer-addressable buffers with corresponding layouts on every participating GPU."
+      },
+      {
+        "term": "Micro-pipeline",
+        "definition": "Split one collective-plus-matmul dependency into smaller communication and compute waves."
+      }
+    ]
+  },
+  "fsdp-dense": {
+    "summary": "Schedule two dense layers with forward and backward FSDP prefetch.",
+    "objective": "Place layer parameter all-gathers and gradient reduce-scatters around two-layer compute.",
+    "catalogTags": [
+      "Dense",
+      "FSDP",
+      "Prefetch"
+    ],
+    "teachingPoints": [
+      "Prefetch may start early, but a layer cannot compute until its own parameters are materialized.",
+      "A layer's reduce-scatter starts only after that layer's complete flat gradient is ready."
+    ],
+    "implementationSketch": {
+      "label": "Two-layer FSDP schedule",
+      "code": [
+        "w0 = wait(all_gather(shard0))",
+        "w1_future = prefetch(all_gather(shard1))",
+        "h = layer0(h, w0)",
+        "h = layer1(h, wait(w1_future))",
+        "w1 = wait(all_gather(shard1))",
+        "w0_future = prefetch(all_gather(shard0))",
+        "g1 = backward(layer1, w1)",
+        "rs1 = reduce_scatter(g1)",
+        "g0 = backward(layer0, wait(w0_future))",
+        "rs0 = reduce_scatter(g0)"
+      ],
+      "note": "With reshard-after-forward, backward materializes each layer's parameters again."
+    },
+    "insight": "Prefetch can start early; compute still waits for its layer's parameters.",
+    "hint": "Overlap the next all-gather with current compute; reduce each layer only after its backward completes.",
+    "explanation": "each prefetch begins early, while compute and reduce-scatter still wait for readiness.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l0-fwd-ag",
+          "toBlockId": "l0-attn-fwd",
+          "label": "Layer 0 waits for parameters",
+          "explanation": "The first layer cannot start until its full parameter set has been materialized by FSDP."
+        },
+        {
+          "fromBlockId": "l1-fwd-ag",
+          "toBlockId": "l1-attn-fwd",
+          "label": "Prefetch hides layer 1 AG",
+          "explanation": "Layer 1 parameters are gathered during layer 0 compute and are ready before first use."
+        },
+        {
+          "fromBlockId": "l1-bwd-ag",
+          "toBlockId": "l1-mlp-bwd",
+          "label": "Backward waits for weights",
+          "explanation": "Backward needs the layer weights again, so layer 1 MLP backward is gated by its backward all-gather."
+        },
+        {
+          "fromBlockId": "l0-attn-bwd",
+          "toBlockId": "l0-rs",
+          "label": "Complete gradients gate RS",
+          "explanation": "The layer-level reduce-scatter launches only after both MLP and attention gradients are complete."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Forward prefetch",
+        "definition": "Materialize the next layer's parameters while the current layer computes."
+      },
+      {
+        "term": "Gradient reduce-scatter",
+        "definition": "Sum a complete flat gradient and retain one shard per FSDP rank."
+      }
+    ]
+  },
+  "fsdp-dense-granular": {
+    "summary": "Split FSDP units at attention/MLP boundaries to expose earlier gradient sharding.",
+    "objective": "Schedule all-gather and reduce-scatter for separate attention and MLP FSDP units in two layers.",
+    "catalogTags": [
+      "Dense",
+      "FSDP",
+      "Granular FSDP"
+    ],
+    "teachingPoints": [
+      "Finer wrapping changes gradient readiness, not the total parameter or gradient bytes.",
+      "MLP backward finishes before attention backward, allowing MLP reduce-scatter to overlap attention compute."
+    ],
+    "implementationSketch": {
+      "label": "Module-granular backward",
+      "code": [
+        "d_mlp = backward(mlp)",
+        "mlp_rs = reduce_scatter_async(d_mlp)",
+        "d_attn = backward(attention)",
+        "attn_rs = reduce_scatter_async(d_attn)",
+        "wait(mlp_rs, attn_rs)"
+      ],
+      "note": "The asynchronous launch is what permits MLP gradient sharding to overlap attention backward."
+    },
+    "insight": "Smaller FSDP units make gradients ready earlier, but add collectives.",
+    "hint": "Backward visits MLP before attention; release each unit's gradient as soon as it becomes complete.",
+    "explanation": "MLP reduce-scatter begins before attention backward finishes, creating earlier overlap.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l0-mlp-fwd-ag",
+          "toBlockId": "l0-mlp-fwd",
+          "label": "MLP waits for its own unit",
+          "explanation": "Separating FSDP units gives attention and MLP independent parameter-materialization boundaries."
+        },
+        {
+          "fromBlockId": "l1-mlp-bwd",
+          "toBlockId": "l1-mlp-rs",
+          "label": "MLP gradients become ready first",
+          "explanation": "Once MLP backward completes, its smaller FSDP unit can reduce immediately while attention backward begins."
+        },
+        {
+          "fromBlockId": "l1-attn-bwd-ag",
+          "toBlockId": "l1-attn-bwd",
+          "label": "Attention waits for its weights",
+          "explanation": "Attention backward remains independently gated by materialization of the attention FSDP unit."
+        },
+        {
+          "fromBlockId": "l1-attn-bwd",
+          "toBlockId": "l1-attn-rs",
+          "label": "Attention gradients gate its RS",
+          "explanation": "The attention reduce-scatter cannot launch until the separate attention gradient is complete."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "FSDP unit",
+        "definition": "A parameter group materialized by one all-gather and sharded by one reduce-scatter."
+      },
+      {
+        "term": "Readiness",
+        "definition": "The earliest point when every gradient in an FSDP unit is available for reduction."
+      }
+    ]
+  },
+  "fsdp-moe": {
+    "summary": "Schedule dense and full-expert FSDP communication around a fixed two-layer MoE path.",
+    "objective": "Place dense and expert all-gathers at first use, then reduce-scatters when each gradient is complete.",
+    "catalogTags": [
+      "MoE",
+      "FSDP",
+      "EP=1"
+    ],
+    "teachingPoints": [
+      "EP=1 has no activation all-to-all, but each grouped expert GEMM still waits for the full expert FSDP unit to materialize.",
+      "Expert reduce-scatter starts only after the full expert gradient is packed and can serialize later dense reductions."
+    ],
+    "implementationSketch": {
+      "label": "Expert-FSDP without EP",
+      "code": [
+        "dense_w = wait(all_gather(dense_shard))",
+        "expert_future = prefetch(all_gather(expert_shard))",
+        "h = attention(x, dense_w)",
+        "score, expert, counts = router(h, dense_w)",
+        "x_e, order = permute(h, expert)",
+        "expert_w = wait(expert_future)",
+        "y_e = grouped_swiglu(x_e, expert_w, counts)",
+        "y = unpermute(y_e, order, score)"
+      ],
+      "note": "Expert prefetch may overlap attention and routing, but grouped GEMM waits for the gathered weights."
+    },
+    "insight": "EP=1 removes activation exchange, not expert parameter all-gathers.",
+    "hint": "Local MoE compute is fixed. Place each all-gather before its first consumer and each reduce-scatter after its gradient pack.",
+    "explanation": "dense and expert weights are gathered before use; gradients are scattered after packing.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l0-expert-fwd-ag",
+          "toBlockId": "l0-expert-copyout-fwd",
+          "label": "Expert AG creates a forward stall",
+          "explanation": "Attention and routing finish before the full expert weights arrive, so expert copy-out waits on the exposed all-gather tail."
+        },
+        {
+          "fromBlockId": "l1-expert-bwd-ag",
+          "toBlockId": "l1-expert-copyout-bwd",
+          "label": "Expert AG creates a backward stall",
+          "explanation": "The local backward path reaches expert first use while the large expert-weight all-gather is still in flight."
+        },
+        {
+          "fromBlockId": "l1-expert-grad-pack",
+          "toBlockId": "l1-expert-rs",
+          "label": "Packed expert gradients gate RS",
+          "explanation": "The expert reduce-scatter begins only after the complete flat expert gradient has been packed."
+        },
+        {
+          "fromBlockId": "l1-expert-rs",
+          "toBlockId": "l1-dense-rs",
+          "label": "Expert RS blocks dense RS",
+          "explanation": "The long expert reduction occupies the serialized FSDP reduction stream, delaying the already-ready dense reduction."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Separate expert FSDP",
+        "definition": "Experts use an independent FSDP state so their large collectives can be scheduled separately."
+      },
+      {
+        "term": "EP=1",
+        "definition": "Every rank can route to the complete expert set; no expert-ownership exchange occurs."
+      }
+    ]
+  },
+  "fsdp-moe-ep": {
+    "summary": "Schedule expert-FSDP communication where it meets the expert-parallel activation path.",
+    "objective": "Place the FSDP and EP communication that gates expert forward and backward.",
+    "catalogTags": [
+      "MoE",
+      "FSDP",
+      "Expert Parallel"
+    ],
+    "teachingPoints": [
+      "Grouped expert compute starts only after expert FSDP has materialized weights and EP has delivered expert-grouped activations.",
+      "Backward prefetch follows L1-before-L0 first use, while each expert reduce-scatter starts from its completed flat-gradient pack."
+    ],
+    "implementationSketch": {
+      "label": "Expert-FSDP + EP data path",
+      "code": [
+        "expert_future = prefetch(all_gather(expert_shard))",
+        "score, expert, counts = router(x)",
+        "routed, source_order = route_tokens(x, expert)",
+        "remote = all_to_all_single_autograd(",
+        "    routed, recv_splits, send_splits, ep_group)",
+        "x_e, local_order = permute(remote, local_counts)",
+        "expert_w = wait(expert_future)",
+        "y_e = grouped_swiglu(x_e, expert_w, local_counts)",
+        "remote = unpermute(y_e, local_order)",
+        "routed = all_to_all_single_autograd(",
+        "    remote, send_splits, recv_splits, ep_group)",
+        "y = scatter_weighted(routed, source_order, score)"
+      ],
+      "note": "Dispatch can overlap expert-weight prefetch; grouped GEMM is the first operation that requires those weights."
+    },
+    "insight": "Grouped expert GEMM waits for weights from FSDP and activations from EP.",
+    "hint": "In forward, join expert all-gather with dispatch before grouped GEMM. In backward, join expert all-gather with the dY exchange.",
+    "explanation": "expert GEMM begins only when routed activations and gathered weights are both ready.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "layer0-expert-ag",
+          "toBlockId": "layer0-swiglu-fwd",
+          "label": "Expert weights gate SwiGLU",
+          "explanation": "Grouped expert compute needs the materialized expert weights supplied by expert FSDP."
+        },
+        {
+          "fromBlockId": "layer0-dispatch",
+          "toBlockId": "layer0-swiglu-fwd",
+          "label": "Dispatched activations gate SwiGLU",
+          "explanation": "The same grouped GEMM also waits for routed activations to arrive from token-owner ranks and be grouped locally."
+        },
+        {
+          "fromBlockId": "layer1-expert-bwd-ag",
+          "toBlockId": "layer1-expert-bwd-copyout",
+          "label": "Unfinished AG exposes a stall",
+          "explanation": "Token-restore backward reaches expert first use before the expert weights are ready, so compute pauses until the all-gather completes."
+        },
+        {
+          "fromBlockId": "layer1-expert-grad-pack",
+          "toBlockId": "layer1-expert-rs",
+          "label": "Expert gradients gate sharding",
+          "explanation": "Expert FSDP can reduce-scatter only after grouped backward has produced and packed the complete expert gradient."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Expert FSDP degree",
+        "definition": "The number of ranks that shard the experts owned by one EP group."
+      },
+      {
+        "term": "Dispatch / combine",
+        "definition": "Activation all-to-alls that move routed tokens to expert owners and outputs back to token owners."
+      }
+    ]
+  },
+  "ddp-terminal": {
+    "summary": "See why one terminal gradient bucket leaves communication fully exposed.",
+    "objective": "Order backward, then place the only gradient all-reduce.",
+    "catalogTags": [
+      "Dense",
+      "Data Parallel",
+      "DDP"
+    ],
+    "teachingPoints": [
+      "DDP synchronizes gradients, not parameters; every rank retains a complete model replica.",
+      "A bucket can launch only after all parameter gradients assigned to it are ready. One model-sized bucket therefore waits for embedding backward."
+    ],
+    "implementationSketch": {
+      "label": "One terminal reducer bucket",
+      "code": [
+        "ddp = DistributedDataParallel(",
+        "    model, bucket_cap_mb=2048,",
+        "    broadcast_buffers=False,",
+        "    gradient_as_bucket_view=True)",
+        "loss = objective(ddp(tokens), targets)",
+        "loss.backward()  # one 852 MiB bucket",
+        "optimizer.step()"
+      ],
+      "note": "The optimizer is outside the measured window. A large reducer bucket is the real DDP analogue of terminal, unbucketed synchronization."
+    },
+    "insight": "With one model-sized bucket, communication waits for the last gradient.",
+    "hint": "Reverse layer 1 before layer 0, finish the embedding gradient, then launch the only all-reduce.",
+    "explanation": "the single bucket launches after embedding backward and remains exposed.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "root-backward",
+          "toBlockId": "l1-mlp-backward",
+          "label": "Loss releases layer backward",
+          "explanation": "Autograd enters the last layer first and traverses its MLP before attention."
+        },
+        {
+          "fromBlockId": "l0-attention-backward",
+          "toBlockId": "embedding-bucket-finalize",
+          "label": "Embedding gradient is last",
+          "explanation": "The model-sized reducer bucket remains incomplete until backward reaches the embedding parameters."
+        },
+        {
+          "fromBlockId": "embedding-bucket-finalize",
+          "toBlockId": "terminal-gradient-ar",
+          "label": "The final gradient gates AR",
+          "explanation": "With one bucket, the only all-reduce cannot launch until every parameter gradient is present."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Model replica",
+        "definition": "Every DDP rank owns the complete parameters and computes gradients from a different local batch."
+      },
+      {
+        "term": "Reducer bucket",
+        "definition": "A flat buffer whose all-reduce launches only after every assigned parameter gradient is ready."
+      }
+    ]
+  },
+  "ddp-bucketed": {
+    "summary": "Place reducer buckets at their measured last-gradient readiness points.",
+    "objective": "Place each all-reduce where its bucket's final gradient becomes ready.",
+    "catalogTags": [
+      "Data Parallel",
+      "Gradient Buckets",
+      "Overlap"
+    ],
+    "teachingPoints": [
+      "Bucket order follows reverse-mode readiness; the 96 MiB cap is a construction target, so large parameters and grouping constraints can produce larger buckets.",
+      "Overlap shortens the tail, but concurrent NCCL contends with backward kernels for GPU and fabric resources."
+    ],
+    "implementationSketch": {
+      "label": "Bucketed DDP backward",
+      "code": [
+        "ddp = DistributedDataParallel(",
+        "    model, bucket_cap_mb=96,",
+        "    broadcast_buffers=False,",
+        "    gradient_as_bucket_view=True)",
+        "loss = objective(ddp(tokens), targets)",
+        "loss.backward()  # reducer launches ready buckets"
+      ],
+      "note": "The benchmark registers PyTorch's default all-reduce hook only to record GradBucket composition; communication semantics are unchanged."
+    },
+    "insight": "A bucket launches at its last gradient. Mixed-layer buckets can hold earlier gradients back.",
+    "hint": "Follow MLP gradients before attention. The cross-layer bucket waits for layer 0 down-projection gradients.",
+    "explanation": "each bucket launches when its final gradient is ready; NCCL follows that readiness order.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l1-mlp-backward",
+          "fromAnchor": "start",
+          "toBlockId": "bucket-output-l1-down",
+          "label": "The first bucket becomes ready inside MLP backward",
+          "explanation": "Its output and norm gradients are ready earlier, but the bucket launches only when the layer 1 down-projection gradient appears."
+        },
+        {
+          "fromBlockId": "l0-mlp-backward",
+          "fromAnchor": "start",
+          "toBlockId": "bucket-cross-layer",
+          "label": "One bucket crosses layers",
+          "explanation": "A layer 1 norm gradient waits for the layer 0 down-projection gradient that shares its reducer bucket."
+        },
+        {
+          "fromBlockId": "embedding-backward",
+          "toBlockId": "bucket-embedding",
+          "label": "The last bucket forms the tail",
+          "explanation": "The embedding bucket cannot become ready until the final embedding gradient is produced, leaving a small exposed tail."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Bucket readiness",
+        "definition": "The point when the final outstanding gradient assigned to one reducer bucket has been produced."
+      },
+      {
+        "term": "Imperfect overlap",
+        "definition": "Communication and compute coincide in time but slow one another through shared-resource contention."
+      }
+    ]
+  },
+  "context-parallel-allgather": {
+    "summary": "Order partial attention when K/V is gathered once per call.",
+    "objective": "Order partial attention by K/V owner, then place backward dK/dV returns.",
+    "catalogTags": [
+      "Dense",
+      "Context Parallel",
+      "All-gather"
+    ],
+    "teachingPoints": [
+      "Local QKV, QK normalization, and RoPE complete before the first K/V collective begins.",
+      "Forward gathers K/V once; backward gathers K/V again but returns accumulated dK/dV cyclically."
+    ],
+    "implementationSketch": {
+      "label": "Native CP with all-gather rotation",
+      "code": [
+        "q, k, v = qkv(x_local)",
+        "kv = concat(k, v)",
+        "kv_future = all_gather_tensor(",
+        "    kv, gather_dim=0, group=cp_group)",
+        "out = flash_attention(q, k, v)",
+        "kv_all = wait(kv_future)",
+        "for kv in remote_ring_order(kv_all, rank):",
+        "    partial = flash_attention(q, kv)",
+        "    out = online_merge(out, partial)"
+      ],
+      "note": "The remote iteration excludes the local K/V shard already consumed before the wait."
+    },
+    "insight": "One K/V all-gather feeds the remote attention steps; dK/dV returns one shard at a time.",
+    "hint": "Follow K/V ownership from rank 0 to successive predecessor-owned shards.",
+    "explanation": "local QKV runs first; gathered K/V shards feed remote attention in ring order.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "qkv-fwd",
+          "toBlockId": "l0-kv-ag-fwd",
+          "label": "Local QKV gates exchange",
+          "explanation": "K/V cannot be gathered until the local projection has produced the rank-owned K/V shard."
+        },
+        {
+          "fromBlockId": "l0-kv-ag-fwd",
+          "toBlockId": "fwd-step-1",
+          "label": "Gathered K/V gates remote attention",
+          "explanation": "Local-shard attention can run while the collective progresses, but the first remote-shard attention waits for gathered K/V."
+        },
+        {
+          "fromBlockId": "l0-kv-ag-bwd",
+          "toBlockId": "bwd-step-1",
+          "label": "Backward gathers K/V again",
+          "explanation": "The remote partial-attention backward steps need the corresponding forward K/V shards before they can run."
+        },
+        {
+          "fromBlockId": "bwd-step-0",
+          "fromAnchor": "start",
+          "toBlockId": "l0-dkv-rotate-0",
+          "label": "dK/dV returns to its owner",
+          "explanation": "Once the local partial backward produces a K/V-gradient contribution, cyclic exchange begins returning accumulated dK/dV to the owning rank."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Online merge",
+        "definition": "Combine partial attention outputs with log-sum-exp state without materializing the full score matrix."
+      },
+      {
+        "term": "Head-tail balance",
+        "definition": "Assign early and late causal sequence regions to each rank to reduce load imbalance."
+      }
+    ]
+  },
+  "context-parallel-alltoall": {
+    "summary": "Order partial attention with cyclic whole-shard K/V transfers.",
+    "objective": "Alternate partial attention with cyclic K/V transfers, then return dK/dV.",
+    "catalogTags": [
+      "Dense",
+      "Context Parallel",
+      "All-to-all"
+    ],
+    "teachingPoints": [
+      "Each transfer sends the current whole K/V shard to one neighbor; this is ring attention, not Ulysses head transposition.",
+      "Backward needs three K/V rotations to feed compute and four dK/dV rotations to return accumulated gradients."
+    ],
+    "implementationSketch": {
+      "label": "Native CP with cyclic all-to-all",
+      "code": [
+        "q, kv = local_qkv(x_local)",
+        "for step in range(cp_size):",
+        "    next_kv = None",
+        "    if step < cp_size - 1:",
+        "        next_kv = permute_tensor(",
+        "            kv, cyclic_dsts, cp_group)",
+        "    partial = flash_attention(q, kv)",
+        "    out = online_merge(out, partial)",
+        "    if next_kv is not None:",
+        "        kv = wait(next_kv)"
+      ],
+      "note": "PyTorch launches the cyclic permutation before attention so transfer and partial attention can overlap."
+    },
+    "insight": "Backward rotates K/V for compute and dK/dV for ownership return.",
+    "hint": "Track the owner of the K/V shard currently resident on rank 0.",
+    "explanation": "K/V rotates for each attention step; dK/dV rotates separately in backward.",
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "qkv-fwd",
+          "toBlockId": "l0-kv-rotate-fwd-0",
+          "label": "Local QKV gates rotation",
+          "explanation": "The first cyclic transfer cannot start until rank 0 has produced its local K/V shard."
+        },
+        {
+          "fromBlockId": "l0-kv-rotate-fwd-0",
+          "toBlockId": "fwd-step-1",
+          "label": "The next K/V shard gates attention",
+          "explanation": "The first remote partial-attention call consumes the K/V shard delivered by the first cyclic transfer."
+        },
+        {
+          "fromBlockId": "l0-kv-rotate-fwd-1",
+          "toBlockId": "fwd-step-2",
+          "label": "Rotation advances the ring",
+          "explanation": "Each partial-attention step waits for the next owner's K/V shard to arrive."
+        },
+        {
+          "fromBlockId": "l0-kv-rotate-bwd-0",
+          "toBlockId": "bwd-step-1",
+          "label": "Backward rotates K/V for compute",
+          "explanation": "Backward needs the same remote K/V ownership sequence before each partial-attention gradient step."
+        },
+        {
+          "fromBlockId": "bwd-step-0",
+          "fromAnchor": "start",
+          "toBlockId": "l0-dkv-rotate-0",
+          "label": "dK/dV follows a separate ring",
+          "explanation": "K/V movement feeds backward compute, while a distinct cyclic exchange accumulates and returns dK/dV to the original owner."
+        }
+      ]
+    },
+    "concepts": [
+      {
+        "term": "Cyclic permutation",
+        "definition": "Send one whole shard to the next rank and receive one whole shard from the previous rank."
+      },
+      {
+        "term": "Not Ulysses",
+        "definition": "No sequence-to-head transpose occurs; each rank still executes one partial attention call per K/V shard."
+      }
+    ]
+  }
+}

@@ -1,0 +1,606 @@
+{
+  "id": "fsdp-moe",
+  "order": 12,
+  "section": "IV · Sharding and overlap",
+  "category": "FSDP",
+  "resourceIds": [
+    "moe",
+    "torchtitan",
+    "ultrascale",
+    "scaling-training"
+  ],
+  "title": "Two-layer FSDP over MoE",
+  "difficulty": 4,
+  "topology": "Dense FSDP=8 · Expert FSDP=8 · EP=1 · NVLink",
+  "scope": "Complete 2-layer forward + loss + backward · optimizer excluded",
+  "timelineMode": "absolute",
+  "totalMs": 151.049462,
+  "pxPerMs": 30,
+  "gridSegments": 16,
+  "variants": [
+    {
+      "id": "nvlink",
+      "label": "Measured NVLink",
+      "default": true
+    }
+  ],
+  "verification": {
+    "status": "measured",
+    "label": "Measured, FQN-correlated, and module-labeled on 8× H100",
+    "implementation": "TorchTitan v0.2.0 Qwen3 MoE with separate nested FSDP2 states for each routed-expert module",
+    "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536; EP=1.",
+    "measurement": "152.008 ms module-labeled step; exact 151.049 ms rank-0 first-to-last collective window shown.",
+    "timeline": "Actual rank-0 module-labeled GPU offsets and durations; all FSDP collectives are separately correlated to FQNs."
+  },
+  "description": [
+    "This is the EP=1 counterpart to the expert-FSDP + EP challenge. Every rank processes its own data-parallel batch and there are no dispatch/combine all-to-alls. Local MoE remains router → permute → grouped SwiGLU → weighted unpermute.",
+    "Each layer's dense attention/router state and routed-expert state are wrapped separately with FSDP=8. The 128-expert BF16 module is 4.5 GiB: its all-gather transfers 3.9375 GiB per rank and remains exposed long after attention finishes.",
+    "Backward is even more communication-bound. Each FP32 expert-gradient reduce-scatter moves 7.875 GiB per rank and measured 23.7–23.8 ms. The serialized reduction stream delays the next dense RS and therefore the next layer's backward.",
+    "TorchTitan v0.2.0 normally folds experts into the layer FSDP state when EP=1. This controlled benchmark uses the same FSDP2 primitives and Qwen implementation but wraps experts separately to expose production-relevant dense/expert prefetch granularity."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "fsdp-ag",
+      "label": "FSDP parameter all-gather",
+      "subtitle": "Rank 0 · NCCL stream 28"
+    },
+    {
+      "id": "fsdp-rs",
+      "label": "FSDP gradient reduce-scatter",
+      "subtitle": "Rank 0 · NCCL stream 32"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "embedding-fwd-ag",
+      "label": "Token-embedding parameter all-gather",
+      "shortLabel": "Embedding AG",
+      "type": "collective",
+      "startMs": 0,
+      "durationMs": 0.26816,
+      "track": "fsdp-ag",
+      "fixed": true
+    },
+    {
+      "id": "l0-dense-fwd-ag",
+      "label": "Layer 0 attention and router parameter all-gather",
+      "shortLabel": "L0 Dense AG",
+      "type": "collective",
+      "startMs": 0.730977,
+      "durationMs": 0.813248,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "embedding-fwd",
+      "label": "Token embedding lookup",
+      "shortLabel": "Embedding",
+      "type": "attention",
+      "startMs": 1.343201,
+      "durationMs": 0.052864,
+      "track": "compute",
+      "fixed": true,
+      "marker": true
+    },
+    {
+      "id": "l0-expert-fwd-ag",
+      "label": "Layer 0 full-expert weight all-gather",
+      "shortLabel": "L0 Expert AG · 4.5 GiB",
+      "type": "collective",
+      "startMs": 2.359233,
+      "durationMs": 13.432322,
+      "track": "fsdp-ag",
+      "description": "Reconstruct all 128 experts. Ring traffic is 4.5 GiB × 7/8 = 3.9375 GiB per rank."
+    },
+    {
+      "id": "l0-attention-fwd",
+      "label": "Layer 0 attention forward",
+      "shortLabel": "L0 Attention",
+      "type": "attention",
+      "startMs": 3.177985,
+      "durationMs": 3.539328,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-router-fwd",
+      "label": "Layer 0 router and top-k",
+      "shortLabel": "L0 Router + TopK",
+      "type": "routing",
+      "startMs": 6.847585,
+      "durationMs": 0.192832,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-permute-fwd",
+      "label": "Layer 0 permute tokens by expert",
+      "shortLabel": "L0 Permute",
+      "type": "routing",
+      "startMs": 7.044641,
+      "durationMs": 0.382816,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-dense-fwd-ag",
+      "label": "Prefetch layer 1 attention and router parameters",
+      "shortLabel": "L1 Dense AG",
+      "type": "collective",
+      "startMs": 15.794179,
+      "durationMs": 1.316672,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "l0-expert-copyout-fwd",
+      "label": "Expose gathered layer 0 expert weights",
+      "shortLabel": "L0 Expert weights ready",
+      "type": "routing",
+      "startMs": 15.808803,
+      "durationMs": 4.005504,
+      "track": "compute",
+      "fixed": true,
+      "description": "Copy the gathered flat FSDP buffer into contiguous gate, up, and down expert-weight views. The operation touches the full 4.5 GiB expert module."
+    },
+    {
+      "id": "l1-expert-fwd-ag",
+      "label": "Prefetch layer 1 full-expert weights",
+      "shortLabel": "L1 Expert AG · 4.5 GiB",
+      "type": "collective",
+      "startMs": 17.409571,
+      "durationMs": 14.232162,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "l0-experts-fwd",
+      "label": "Layer 0 grouped expert SwiGLU forward",
+      "shortLabel": "L0 Grouped SwiGLU",
+      "type": "mlp",
+      "startMs": 19.818467,
+      "durationMs": 5.869121,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-unpermute-fwd",
+      "label": "Layer 0 unpermute and routing-weighted combine",
+      "shortLabel": "L0 Unpermute + weights",
+      "type": "routing",
+      "startMs": 25.693988,
+      "durationMs": 2.321504,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-attention-fwd",
+      "label": "Layer 1 attention forward",
+      "shortLabel": "L1 Attention",
+      "type": "attention",
+      "startMs": 28.309188,
+      "durationMs": 2.926849,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-router-fwd",
+      "label": "Layer 1 router and top-k",
+      "shortLabel": "L1 Router + TopK",
+      "type": "routing",
+      "startMs": 31.354629,
+      "durationMs": 0.170816,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-permute-fwd",
+      "label": "Layer 1 permute tokens by expert",
+      "shortLabel": "L1 Permute",
+      "type": "routing",
+      "startMs": 31.529989,
+      "durationMs": 0.286912,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "root-fwd-ag",
+      "label": "Final norm and output parameter all-gather",
+      "shortLabel": "Output AG",
+      "type": "collective",
+      "startMs": 31.644101,
+      "durationMs": 0.17952,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "l1-expert-copyout-fwd",
+      "label": "Expose gathered layer 1 expert weights",
+      "shortLabel": "L1 Expert weights ready",
+      "type": "routing",
+      "startMs": 31.834437,
+      "durationMs": 3.347104,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-experts-fwd",
+      "label": "Layer 1 grouped expert SwiGLU forward",
+      "shortLabel": "L1 Grouped SwiGLU",
+      "type": "mlp",
+      "startMs": 35.184837,
+      "durationMs": 3.466625,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-unpermute-fwd",
+      "label": "Layer 1 unpermute and routing-weighted combine",
+      "shortLabel": "L1 Unpermute + weights",
+      "type": "routing",
+      "startMs": 38.655718,
+      "durationMs": 1.677344,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "root-forward-loss",
+      "label": "Final norm, output projection, and cross-entropy",
+      "shortLabel": "Output + loss",
+      "type": "loss",
+      "startMs": 40.38679,
+      "durationMs": 0.138688,
+      "track": "compute",
+      "fixed": true,
+      "marker": true
+    },
+    {
+      "id": "l1-dense-bwd-ag",
+      "label": "Backward prefetch: layer 1 attention and router parameters",
+      "shortLabel": "L1 Dense BWD AG",
+      "type": "collective",
+      "startMs": 40.522342,
+      "durationMs": 0.864672,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "root-backward",
+      "label": "Loss, output projection, and final norm backward",
+      "shortLabel": "Output backward",
+      "type": "loss",
+      "startMs": 40.53095,
+      "durationMs": 0.521952,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-unpermute-bwd",
+      "label": "Layer 1 weighted unpermute backward",
+      "shortLabel": "L1 Unpermute BWD",
+      "type": "routing",
+      "startMs": 41.539558,
+      "durationMs": 4.147681,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-expert-bwd-ag",
+      "label": "Backward prefetch: layer 1 full-expert weights",
+      "shortLabel": "L1 Expert BWD AG",
+      "type": "collective",
+      "startMs": 42.259174,
+      "durationMs": 13.477154,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "root-rs",
+      "label": "Output and final-norm gradient reduce-scatter",
+      "shortLabel": "Output RS",
+      "type": "collective",
+      "startMs": 55.739144,
+      "durationMs": 0.1744,
+      "track": "fsdp-rs"
+    },
+    {
+      "id": "l1-expert-copyout-bwd",
+      "label": "Expose gathered layer 1 expert weights for backward",
+      "shortLabel": "L1 Expert BWD weights",
+      "type": "routing",
+      "startMs": 55.752808,
+      "durationMs": 3.679649,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-dense-bwd-ag",
+      "label": "Backward prefetch: layer 0 attention and router parameters",
+      "shortLabel": "L0 Dense BWD AG",
+      "type": "collective",
+      "startMs": 57.002152,
+      "durationMs": 1.723393,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "l0-expert-bwd-ag",
+      "label": "Backward prefetch: layer 0 full-expert weights",
+      "shortLabel": "L0 Expert BWD AG",
+      "type": "collective",
+      "startMs": 58.955817,
+      "durationMs": 14.243522,
+      "track": "fsdp-ag"
+    },
+    {
+      "id": "l1-experts-bwd",
+      "label": "Layer 1 grouped expert SwiGLU backward",
+      "shortLabel": "L1 Grouped SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 59.435497,
+      "durationMs": 14.09341,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-expert-grad-pack",
+      "label": "Pack layer 1 expert gradients for FSDP",
+      "shortLabel": "L1 Expert grad pack",
+      "type": "routing",
+      "startMs": 73.635371,
+      "durationMs": 7.559073,
+      "track": "compute",
+      "fixed": true,
+      "description": "Pack the full FP32 expert gradients into the flat FSDP reduction buffer."
+    },
+    {
+      "id": "l1-expert-rs",
+      "label": "Layer 1 full-expert gradient reduce-scatter",
+      "shortLabel": "L1 Expert RS · 9 GiB FP32",
+      "type": "collective",
+      "startMs": 81.200908,
+      "durationMs": 23.797475,
+      "track": "fsdp-rs",
+      "description": "Ring traffic is 9 GiB × 7/8 = 7.875 GiB per rank. Most of this collective is exposed after attention backward completes."
+    },
+    {
+      "id": "l1-permute-bwd",
+      "label": "Layer 1 permute backward",
+      "shortLabel": "L1 Permute BWD",
+      "type": "routing",
+      "startMs": 81.202668,
+      "durationMs": 0.792704,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-router-bwd",
+      "label": "Layer 1 router backward",
+      "shortLabel": "L1 Router BWD",
+      "type": "routing",
+      "startMs": 81.995372,
+      "durationMs": 0.160896,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-attention-bwd",
+      "label": "Layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "startMs": 82.4163,
+      "durationMs": 5.438593,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-dense-grad-pack",
+      "label": "Pack layer 1 dense gradients",
+      "shortLabel": "L1 Dense grad pack",
+      "type": "routing",
+      "startMs": 105.014127,
+      "durationMs": 0.2288,
+      "track": "compute",
+      "fixed": true,
+      "marker": true
+    },
+    {
+      "id": "l1-dense-rs",
+      "label": "Layer 1 dense-gradient reduce-scatter",
+      "shortLabel": "L1 Dense RS",
+      "type": "collective",
+      "startMs": 105.250895,
+      "durationMs": 0.880192,
+      "track": "fsdp-rs"
+    },
+    {
+      "id": "l0-unpermute-bwd",
+      "label": "Layer 0 weighted unpermute backward",
+      "shortLabel": "L0 Unpermute BWD",
+      "type": "routing",
+      "startMs": 105.399951,
+      "durationMs": 2.156449,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "embedding-bwd-ag",
+      "label": "Backward prefetch: token-embedding parameters",
+      "shortLabel": "Embedding BWD AG",
+      "type": "collective",
+      "startMs": 106.149551,
+      "durationMs": 0.126944,
+      "track": "fsdp-ag",
+      "fixed": true,
+      "marker": true
+    },
+    {
+      "id": "l0-expert-copyout-bwd",
+      "label": "Expose gathered layer 0 expert weights for backward",
+      "shortLabel": "L0 Expert BWD weights",
+      "type": "routing",
+      "startMs": 107.567184,
+      "durationMs": 3.327136,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-experts-bwd",
+      "label": "Layer 0 grouped expert SwiGLU backward",
+      "shortLabel": "L0 Grouped SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 110.89656,
+      "durationMs": 7.551137,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-expert-grad-pack",
+      "label": "Pack layer 0 expert gradients for FSDP",
+      "shortLabel": "L0 Expert grad pack",
+      "type": "routing",
+      "startMs": 118.573713,
+      "durationMs": 7.540353,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-expert-rs",
+      "label": "Layer 0 full-expert gradient reduce-scatter",
+      "shortLabel": "L0 Expert RS · 9 GiB FP32",
+      "type": "collective",
+      "startMs": 126.121042,
+      "durationMs": 23.723043,
+      "track": "fsdp-rs"
+    },
+    {
+      "id": "l0-permute-bwd",
+      "label": "Layer 0 permute backward",
+      "shortLabel": "L0 Permute BWD",
+      "type": "routing",
+      "startMs": 126.122482,
+      "durationMs": 0.768352,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-router-bwd",
+      "label": "Layer 0 router backward",
+      "shortLabel": "L0 Router BWD",
+      "type": "routing",
+      "startMs": 126.890834,
+      "durationMs": 0.164928,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-attention-bwd",
+      "label": "Layer 0 attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "startMs": 127.30821,
+      "durationMs": 5.412865,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-dense-grad-pack",
+      "label": "Pack layer 0 dense gradients",
+      "shortLabel": "L0 Dense grad pack",
+      "type": "routing",
+      "startMs": 149.864309,
+      "durationMs": 0.22928,
+      "track": "compute",
+      "fixed": true,
+      "marker": true
+    },
+    {
+      "id": "l0-dense-rs",
+      "label": "Layer 0 dense-gradient reduce-scatter",
+      "shortLabel": "L0 Dense RS",
+      "type": "collective",
+      "startMs": 150.101397,
+      "durationMs": 0.772321,
+      "track": "fsdp-rs"
+    },
+    {
+      "id": "embedding-bwd",
+      "label": "Token embedding backward",
+      "shortLabel": "Embedding BWD",
+      "type": "attention",
+      "startMs": 150.103061,
+      "durationMs": 0.309569,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "embedding-rs",
+      "label": "Token-embedding gradient reduce-scatter",
+      "shortLabel": "Embedding RS",
+      "type": "collective",
+      "startMs": 150.899062,
+      "durationMs": 0.1504,
+      "track": "fsdp-rs",
+      "fixed": true,
+      "marker": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward-ag",
+      "label": "Forward parameter materialization",
+      "blockIds": [
+        "l0-dense-fwd-ag",
+        "l0-expert-fwd-ag",
+        "l1-dense-fwd-ag",
+        "l1-expert-fwd-ag",
+        "root-fwd-ag"
+      ]
+    },
+    {
+      "id": "backward-ag",
+      "label": "Backward parameter prefetch",
+      "blockIds": [
+        "l1-dense-bwd-ag",
+        "l1-expert-bwd-ag",
+        "l0-dense-bwd-ag",
+        "l0-expert-bwd-ag"
+      ]
+    },
+    {
+      "id": "gradient-rs",
+      "label": "Gradient sharding",
+      "blockIds": [
+        "root-rs",
+        "l1-expert-rs",
+        "l1-dense-rs",
+        "l0-expert-rs",
+        "l0-dense-rs"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "collective",
+      "weight": 4
+    },
+    {
+      "type": "attention",
+      "weight": 1
+    },
+    {
+      "type": "routing",
+      "weight": 0.5
+    },
+    {
+      "type": "mlp",
+      "weight": 1.5
+    },
+    {
+      "type": "collective",
+      "weight": 7
+    },
+    {
+      "type": "attention",
+      "weight": 1
+    }
+  ]
+}

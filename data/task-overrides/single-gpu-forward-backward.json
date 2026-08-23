@@ -1,0 +1,145 @@
+{
+  "id": "single-gpu-forward-backward",
+  "order": 1,
+  "section": "I · Execution fundamentals",
+  "category": "Foundations",
+  "resourceIds": [
+    "scaling-training"
+  ],
+  "title": "Single-GPU forward + backward",
+  "difficulty": 1,
+  "topology": "1× H100",
+  "scope": "One Qwen-shaped dense layer · BF16 · sequence 4096",
+  "timelineMode": "absolute",
+  "totalMs": 15.093462,
+  "pxPerMs": 100,
+  "gridSegments": 12,
+  "verification": {
+    "status": "measured",
+    "label": "Measured single-H100 dense training step",
+    "implementation": "Explicit Qwen-shaped GQA using PyTorch Flash SDPA, dense SwiGLU, and AdamW foreach",
+    "workload": "Hidden 4096, 64 query heads, 4 KV heads, head dimension 128, dense intermediate 12288, batch 1, sequence 4096, BF16",
+    "measurement": "16.204 ms CUDA-event wall time; 15.093 ms dependency-packed rank-0 GPU busy timeline shown",
+    "timeline": "Measured GPU busy durations packed without CPU launch gaps; backward includes activation gradI and optimizer is a real AdamW step."
+  },
+  "description": [
+    "This onboarding challenge intentionally stays high-level: attention forward, MLP forward, a scalar loss, the two reverse-mode blocks, and an optimizer step.",
+    "The measured attention contains RMSNorm, Q/K/V projections, FlashAttention, and the output projection. The measured MLP contains RMSNorm and all three dense SwiGLU projections. Those kernels are aggregated so the first exercise teaches dependencies rather than kernel trivia.",
+    "The benchmark uses a mean-squared activation loss over synthetic hidden states. This keeps the loss self-contained; the dependency order is the same as a language-model loss, but its duration must not be interpreted as cross-entropy timing."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "attn-fwd",
+      "label": "Attention forward",
+      "shortLabel": "Attention forward",
+      "type": "attention",
+      "startMs": 0,
+      "durationMs": 1.703743,
+      "track": "compute",
+      "description": "RMSNorm, Q/K/V projections, FlashAttention, output projection, and residual add."
+    },
+    {
+      "id": "mlp-fwd",
+      "label": "MLP forward",
+      "shortLabel": "MLP forward",
+      "type": "mlp",
+      "startMs": 1.703743,
+      "durationMs": 2.039007,
+      "track": "compute",
+      "description": "RMSNorm followed by gate, up, activation, down projection, and residual add."
+    },
+    {
+      "id": "loss",
+      "label": "Loss",
+      "shortLabel": "Loss",
+      "type": "loss",
+      "startMs": 3.74275,
+      "durationMs": 0.133311,
+      "track": "compute",
+      "description": "Measured mean-squared activation loss plus the tiny scalar backward seed."
+    },
+    {
+      "id": "mlp-bwd",
+      "label": "MLP backward",
+      "shortLabel": "MLP backward",
+      "type": "mlp",
+      "startMs": 3.876061,
+      "durationMs": 4.015005,
+      "track": "compute",
+      "description": "Activation-gradient and weight-gradient work for the dense SwiGLU block."
+    },
+    {
+      "id": "attn-bwd",
+      "label": "Attention backward",
+      "shortLabel": "Attention backward",
+      "type": "attention",
+      "startMs": 7.891066,
+      "durationMs": 3.704221,
+      "track": "compute",
+      "description": "FlashAttention backward plus projection, norm, residual, parameter-gradient, and input-gradient work."
+    },
+    {
+      "id": "optimizer",
+      "label": "Optimizer step",
+      "shortLabel": "AdamW step",
+      "type": "optimizer",
+      "startMs": 11.595287,
+      "durationMs": 3.498175,
+      "track": "compute",
+      "description": "Measured PyTorch AdamW foreach update over this layer's BF16 parameters."
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward",
+      "label": "Forward",
+      "blockIds": [
+        "attn-fwd",
+        "mlp-fwd",
+        "loss"
+      ]
+    },
+    {
+      "id": "backward",
+      "label": "Backward + update",
+      "blockIds": [
+        "mlp-bwd",
+        "attn-bwd",
+        "optimizer"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "attention",
+      "weight": 1.7
+    },
+    {
+      "type": "mlp",
+      "weight": 2
+    },
+    {
+      "type": "loss",
+      "weight": 0.2
+    },
+    {
+      "type": "mlp",
+      "weight": 4
+    },
+    {
+      "type": "attention",
+      "weight": 3.7
+    },
+    {
+      "type": "optimizer",
+      "weight": 3.5
+    }
+  ]
+}

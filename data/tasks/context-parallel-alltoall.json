@@ -1,0 +1,351 @@
+{
+  "id": "context-parallel-alltoall",
+  "order": 15,
+  "section": "V · Context parallelism",
+  "category": "Context Parallel",
+  "resourceIds": [
+    "pytorch-cp-source",
+    "torchtitan",
+    "ultrascale"
+  ],
+  "title": "Ring CP: cyclic all-to-all K/V rotation",
+  "difficulty": 4,
+  "topology": "CP=4 · 4×H100 NVLink",
+  "scope": "Measured Layer 0 slice · 16K-token train step",
+  "timelineMode": "absolute",
+  "totalMs": 66.961323,
+  "pxPerMs": 40,
+  "gridSegments": 13,
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan/PyTorch native CP · rank 0 CUDA streams",
+    "implementation": "TorchTitan Qwen3 model with PyTorch 2.9 native context_parallel, FlashAttention, CP=4, cyclic all-to-all K/V rotation",
+    "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 query heads, 4 KV heads, sequence 16384, BF16; displayed detail is Layer 0",
+    "measurement": "68.675 ms full CUDA-event step; 66.961 ms displayed semantic GPU window",
+    "timeline": "Exact rank-0 Nsight compute-stream and NCCL-stream timestamps; Layer 1 is explicit fixed context."
+  },
+  "description": [
+    "This uses the same native ring-attention math as the all-gather task, but each iteration cyclically permutes the current concatenated K/V shard with an NCCL all-to-all primitive. It does not transpose sequence into attention heads and is therefore not Ulysses.",
+    "Forward has three K/V rotations for four CP ranks. Backward interleaves three K/V rotations needed by partial FlashAttention backward with four dK/dV rotations that accumulate and return gradients to the original shard owners.",
+    "The trace shows measured Layer 0 detail. Fixed omission bands hide Layer 1 compute and communication so they provide elapsed context without demonstrating the Layer 0 answer."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "comm",
+      "label": "CP K/V exchange",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "embedding-norm",
+      "label": "Fixed context: token embedding lookup and Layer 0 attention RMSNorm",
+      "shortLabel": "Embedding + RMSNorm",
+      "type": "attention",
+      "startMs": 0,
+      "durationMs": 0.682112,
+      "track": "compute",
+      "fixed": true,
+      "callout": true
+    },
+    {
+      "id": "qkv-fwd",
+      "label": "Fixed dependency: Layer 0 QKV projections, QK norms, and RoPE complete before CP communication",
+      "shortLabel": "QKV + QK norms + RoPE",
+      "type": "attention",
+      "startMs": 0.682112,
+      "durationMs": 1.508704,
+      "track": "compute",
+      "fixed": true,
+      "callout": true,
+      "description": "The K/V shard used by CP communication is produced here. No CP collective starts before this block finishes."
+    },
+    {
+      "id": "fwd-step-0",
+      "label": "L0 CP attention forward step 0: local K/V shard",
+      "shortLabel": "Fwd · local K/V",
+      "type": "attention",
+      "startMs": 2.190816,
+      "durationMs": 1.685313,
+      "track": "compute",
+      "callout": true
+    },
+    {
+      "id": "fwd-step-1",
+      "label": "L0 CP attention forward against K/V owned by rank 3",
+      "shortLabel": "Fwd · K/V owner r3",
+      "type": "attention",
+      "startMs": 3.876129,
+      "durationMs": 1.853056,
+      "track": "compute",
+      "callout": true
+    },
+    {
+      "id": "fwd-step-2",
+      "label": "L0 CP attention forward against K/V owned by rank 2",
+      "shortLabel": "Fwd · K/V owner r2",
+      "type": "attention",
+      "startMs": 5.729185,
+      "durationMs": 1.718496,
+      "track": "compute",
+      "callout": true
+    },
+    {
+      "id": "fwd-step-3",
+      "label": "L0 CP attention forward against K/V owned by rank 1",
+      "shortLabel": "Fwd · K/V owner r1",
+      "type": "attention",
+      "startMs": 7.447681,
+      "durationMs": 1.38192,
+      "track": "compute"
+    },
+    {
+      "id": "dense-fwd",
+      "label": "Fixed context: L0 attention output projection, residual, MLP RMSNorm, and SwiGLU forward",
+      "shortLabel": "O projection → L0 SwiGLU",
+      "type": "mlp",
+      "startMs": 8.829601,
+      "durationMs": 2.175105,
+      "track": "compute",
+      "fixed": true,
+      "callout": true
+    },
+    {
+      "id": "middle-ellipsis",
+      "label": "Fixed omitted context: Layer 1 forward, final norm, output head, loss, Layer 1 backward, and Layer 0 MLP/output-projection backward",
+      "shortLabel": "… L1 + loss + backward dense context …",
+      "type": "bubble",
+      "startMs": 11.004706,
+      "durationMs": 38.198502,
+      "track": "compute",
+      "fixed": true,
+      "description": "This is deliberately omitted busy compute, not a CPU bubble or idle GPU interval."
+    },
+    {
+      "id": "bwd-step-0",
+      "label": "L0 CP attention backward step 0: local K/V contribution",
+      "shortLabel": "Bwd · local K/V",
+      "type": "attention",
+      "startMs": 49.203208,
+      "durationMs": 3.672449,
+      "track": "compute"
+    },
+    {
+      "id": "bwd-step-1",
+      "label": "L0 CP attention backward for K/V owned by rank 3",
+      "shortLabel": "Bwd · K/V owner r3",
+      "type": "attention",
+      "startMs": 52.875657,
+      "durationMs": 3.678528,
+      "track": "compute"
+    },
+    {
+      "id": "bwd-step-2",
+      "label": "L0 CP attention backward for K/V owned by rank 2",
+      "shortLabel": "Bwd · K/V owner r2",
+      "type": "attention",
+      "startMs": 56.554185,
+      "durationMs": 3.537601,
+      "track": "compute"
+    },
+    {
+      "id": "bwd-step-3",
+      "label": "L0 CP attention backward for K/V owned by rank 1",
+      "shortLabel": "Bwd · K/V owner r1",
+      "type": "attention",
+      "startMs": 60.091786,
+      "durationMs": 5.699745,
+      "track": "compute",
+      "description": "Envelope includes partial backward accumulation and the wait for the returning dK/dV shard."
+    },
+    {
+      "id": "context-out",
+      "label": "Fixed context: L0 QKV and RMSNorm gradients plus embedding weight gradient",
+      "shortLabel": "QKV grads → embedding grad",
+      "type": "attention",
+      "startMs": 65.791531,
+      "durationMs": 1.169792,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-kv-rotate-fwd-0",
+      "label": "Cyclic K/V transfer that brings rank 3's shard to rank 0",
+      "shortLabel": "Receive K/V owner r3",
+      "type": "collective",
+      "startMs": 2.925376,
+      "durationMs": 0.852481,
+      "track": "comm",
+      "callout": true,
+      "description": "Local QKV is complete. Rank 0 sends its current 8 MiB K/V shard onward and receives the predecessor's shard while computing local partial attention."
+    },
+    {
+      "id": "l0-kv-rotate-fwd-1",
+      "label": "Cyclic K/V transfer that brings rank 2's shard to rank 0",
+      "shortLabel": "Receive K/V owner r2",
+      "type": "collective",
+      "startMs": 4.578913,
+      "durationMs": 1.050848,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-kv-rotate-fwd-2",
+      "label": "Cyclic K/V transfer that brings rank 1's shard to rank 0",
+      "shortLabel": "Receive K/V owner r1",
+      "type": "collective",
+      "startMs": 6.425793,
+      "durationMs": 1.019232,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "comm-ellipsis",
+      "label": "Fixed omission: Layer 1 CP communication is deliberately hidden",
+      "shortLabel": "… Layer 1 CP communication hidden …",
+      "type": "bubble",
+      "startMs": 11.004706,
+      "durationMs": 38.091654,
+      "track": "comm",
+      "fixed": true,
+      "description": "This annotation spans the omitted Layer 1 region; it does not claim continuous communication."
+    },
+    {
+      "id": "l0-kv-rotate-bwd-0",
+      "label": "Backward K/V transfer that brings rank 3's shard to rank 0",
+      "shortLabel": "Bwd receive K/V r3",
+      "type": "collective",
+      "startMs": 49.09636,
+      "durationMs": 0.959072,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-0",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 0",
+      "shortLabel": "dKV owner r0",
+      "type": "collective",
+      "startMs": 52.615209,
+      "durationMs": 1.264416,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-kv-rotate-bwd-1",
+      "label": "Backward K/V transfer that brings rank 2's shard to rank 0",
+      "shortLabel": "Bwd receive K/V r2",
+      "type": "collective",
+      "startMs": 55.150889,
+      "durationMs": 1.156608,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-1",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 3",
+      "shortLabel": "dKV owner r3",
+      "type": "collective",
+      "startMs": 56.310089,
+      "durationMs": 1.267456,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-kv-rotate-bwd-2",
+      "label": "Backward K/V transfer that brings rank 1's shard to rank 0",
+      "shortLabel": "Bwd receive K/V r1",
+      "type": "collective",
+      "startMs": 58.815338,
+      "durationMs": 1.162176,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-2",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 2",
+      "shortLabel": "dKV owner r2",
+      "type": "collective",
+      "startMs": 59.98193,
+      "durationMs": 1.327072,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-3",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 1",
+      "shortLabel": "dKV owner r1",
+      "type": "collective",
+      "startMs": 63.057162,
+      "durationMs": 1.603809,
+      "track": "comm",
+      "callout": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward-attention",
+      "label": "Forward partial attention",
+      "blockIds": [
+        "fwd-step-0",
+        "fwd-step-1",
+        "fwd-step-2",
+        "fwd-step-3"
+      ]
+    },
+    {
+      "id": "forward-communication",
+      "label": "Forward K/V rotations",
+      "blockIds": [
+        "l0-kv-rotate-fwd-0",
+        "l0-kv-rotate-fwd-1",
+        "l0-kv-rotate-fwd-2"
+      ]
+    },
+    {
+      "id": "backward-attention",
+      "label": "Backward partial attention",
+      "blockIds": [
+        "bwd-step-0",
+        "bwd-step-1",
+        "bwd-step-2",
+        "bwd-step-3"
+      ]
+    },
+    {
+      "id": "backward-communication",
+      "label": "Backward K/V and dK/dV",
+      "blockIds": [
+        "l0-kv-rotate-bwd-0",
+        "l0-dkv-rotate-0",
+        "l0-kv-rotate-bwd-1",
+        "l0-dkv-rotate-1",
+        "l0-kv-rotate-bwd-2",
+        "l0-dkv-rotate-2",
+        "l0-dkv-rotate-3"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "attention",
+      "weight": 1.7
+    },
+    {
+      "type": "collective",
+      "weight": 1
+    },
+    {
+      "type": "attention",
+      "weight": 3.6
+    },
+    {
+      "type": "collective",
+      "weight": 1.3
+    }
+  ]
+}

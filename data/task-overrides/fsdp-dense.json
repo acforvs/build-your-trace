@@ -1,0 +1,339 @@
+{
+  "id": "fsdp-dense",
+  "order": 10,
+  "section": "IV · Sharding and overlap",
+  "category": "FSDP",
+  "resourceIds": [
+    "ultrascale",
+    "scaling-training",
+    "torchtitan"
+  ],
+  "title": "FSDP dense layer with prefetch",
+  "difficulty": 3,
+  "topology": "FSDP=8 · 8×H100 · NVLink",
+  "scope": "2 dense Qwen-shaped layers · forward + loss boundary + backward",
+  "timelineMode": "absolute",
+  "totalMs": 33.441,
+  "pxPerMs": 48,
+  "gridSegments": 12,
+  "variants": [
+    {
+      "id": "nvlink",
+      "label": "Measured NVLink"
+    }
+  ],
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan FSDP2 · rank 0 GPU streams",
+    "implementation": "TorchTitan v0.2.0 dense Qwen3 with explicit dependency-ordered FSDP2 prefetch",
+    "workload": "Two layers, hidden 4096, 64 Q heads, 4 KV heads, dense SwiGLU 12288, sequence 4096, BF16 parameters, FP32 gradient reduction, FSDP=8",
+    "measurement": "35.075 ms full captured step; 33.441 ms displayed window from the L0 forward AG through the final embedding RS",
+    "timeline": "Collective starts and durations come from the clean Nsight capture; labeled kernels are mapped back to that clean capture."
+  },
+  "description": [
+    "This challenge is a real two-layer TorchTitan FSDP2 trace on eight H100s. Each dense layer contains GQA attention and a dense SwiGLU MLP. Synthetic tokens remove data loading without changing model or collective execution.",
+    "Forward prefetch launches the layer 1 parameter all-gather as soon as layer 0 parameters finish materializing. Backward prefetch reconstructs layer 0 while layer 1 backward executes. Gradient reduce-scatter starts as soon as each layer's flat gradient is packed.",
+    "The task starts at the layer 0 all-gather. Final norm/output/loss and the embedding backward boundary are fixed context so the puzzle can focus on attention, MLP, layer all-gathers, and layer reduce-scatters."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "fsdp-ag",
+      "label": "FSDP parameter all-gather",
+      "subtitle": "Rank 0 · NCCL stream 28"
+    },
+    {
+      "id": "fsdp-rs",
+      "label": "FSDP gradient reduce-scatter",
+      "subtitle": "Rank 0 · NCCL stream 32"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "l0-fwd-ag",
+      "label": "Layer 0 forward parameter all-gather",
+      "shortLabel": "L0 FWD AG",
+      "type": "collective",
+      "durationMs": 1.431392,
+      "startMs": 0,
+      "track": "fsdp-ag",
+      "description": "Materialize the complete 424 MiB BF16 layer 0 parameter set from eight FSDP shards."
+    },
+    {
+      "id": "l1-fwd-ag",
+      "label": "Prefetch layer 1 forward parameters",
+      "shortLabel": "L1 FWD AG",
+      "type": "collective",
+      "durationMs": 1.366112,
+      "startMs": 1.43488,
+      "track": "fsdp-ag",
+      "description": "Layer 0's pre-forward path launches layer 1 prefetch immediately after L0 AG releases the serialized FSDP stream; it overlaps L0 attention."
+    },
+    {
+      "id": "l0-attn-fwd",
+      "label": "Layer 0 attention forward",
+      "shortLabel": "L0 Attention FWD",
+      "type": "attention",
+      "durationMs": 2.966432,
+      "startMs": 1.443392,
+      "track": "compute",
+      "description": "FSDP parameter copy-out, input norm, QKV projections, RoPE, Flash Attention, output projection, and residual."
+    },
+    {
+      "id": "l0-mlp-fwd",
+      "label": "Layer 0 dense SwiGLU forward",
+      "shortLabel": "L0 SwiGLU FWD",
+      "type": "mlp",
+      "durationMs": 1.793472,
+      "startMs": 4.409824,
+      "track": "compute",
+      "description": "FFN norm, gate/up GEMMs, SiLU multiply, down GEMM, and residual."
+    },
+    {
+      "id": "root-fwd-ag",
+      "label": "Fixed context: final norm and output all-gather",
+      "shortLabel": "Root output AG",
+      "type": "collective",
+      "durationMs": 0.048192,
+      "startMs": 5.532288,
+      "track": "fsdp-ag",
+      "description": "The small shared final-norm/output FSDP state is prefetched while layer 0 MLP executes.",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-fwd",
+      "label": "Layer 1 attention forward",
+      "shortLabel": "L1 Attention FWD",
+      "type": "attention",
+      "durationMs": 2.407968,
+      "startMs": 6.203296,
+      "track": "compute",
+      "description": "Layer 1 parameter copy-out, input norm, GQA attention kernels, output projection, and residual."
+    },
+    {
+      "id": "l1-mlp-fwd",
+      "label": "Layer 1 dense SwiGLU forward",
+      "shortLabel": "L1 SwiGLU FWD",
+      "type": "mlp",
+      "durationMs": 1.7888,
+      "startMs": 8.611264,
+      "track": "compute",
+      "description": "Dense SwiGLU forward for layer 1, including its norm and residual envelope."
+    },
+    {
+      "id": "root-boundary",
+      "label": "Fixed context: final norm, output, loss, and root backward",
+      "shortLabel": "Output + Loss + Root BWD",
+      "type": "loss",
+      "durationMs": 1.750528,
+      "startMs": 10.400064,
+      "track": "compute",
+      "description": "The two-layer puzzle keeps the root module and loss visible as fixed context; this block includes root backward and L1 backward parameter copy-out.",
+      "fixed": true
+    },
+    {
+      "id": "l1-bwd-ag",
+      "label": "Layer 1 backward parameter all-gather",
+      "shortLabel": "L1 BWD AG",
+      "type": "collective",
+      "durationMs": 1.559904,
+      "startMs": 10.576416,
+      "track": "fsdp-ag",
+      "description": "The root output module prefetches layer 1 parameters for backward while output/loss backward executes."
+    },
+    {
+      "id": "root-rs",
+      "label": "Fixed context: final norm and output reduce-scatter",
+      "shortLabel": "Root RS",
+      "type": "collective",
+      "durationMs": 0.133216,
+      "startMs": 12.138752,
+      "track": "fsdp-rs",
+      "description": "Shard the root module gradients after its backward pass.",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-bwd",
+      "label": "Layer 1 dense SwiGLU backward",
+      "shortLabel": "L1 SwiGLU BWD",
+      "type": "mlp",
+      "durationMs": 4.344864,
+      "startMs": 12.150592,
+      "track": "compute",
+      "description": "Backward through the dense down, activation, gate, and up paths, including FFN normalization work."
+    },
+    {
+      "id": "l0-bwd-ag",
+      "label": "Prefetch layer 0 backward parameters",
+      "shortLabel": "L0 BWD AG",
+      "type": "collective",
+      "durationMs": 1.548864,
+      "startMs": 13.580928,
+      "track": "fsdp-ag",
+      "description": "Layer 1 backward launches layer 0 parameter prefetch; it is fully hidden by L1 backward compute."
+    },
+    {
+      "id": "l1-attn-bwd",
+      "label": "Layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "durationMs": 4.875776,
+      "startMs": 16.495456,
+      "track": "compute",
+      "description": "Backward through residual, output projection, Flash Attention, RoPE/QKV, and norms; the envelope ends with flat-gradient packing."
+    },
+    {
+      "id": "l1-rs",
+      "label": "Layer 1 gradient reduce-scatter",
+      "shortLabel": "L1 Gradient RS",
+      "type": "collective",
+      "durationMs": 2.783296,
+      "startMs": 21.362528,
+      "track": "fsdp-rs",
+      "description": "FP32 layer 1 gradient sharding begins about 5 µs after gradient packing and overlaps layer 0 MLP backward."
+    },
+    {
+      "id": "l0-mlp-bwd",
+      "label": "Layer 0 dense SwiGLU backward",
+      "shortLabel": "L0 SwiGLU BWD",
+      "type": "mlp",
+      "durationMs": 4.5048,
+      "startMs": 21.371232,
+      "track": "compute",
+      "description": "Layer 0 parameter copy-out followed by dense SwiGLU and FFN-normalization backward."
+    },
+    {
+      "id": "embedding-bwd-ag",
+      "label": "Fixed context: embedding backward all-gather",
+      "shortLabel": "Embedding BWD AG",
+      "type": "collective",
+      "durationMs": 0.147648,
+      "startMs": 24.510368,
+      "track": "fsdp-ag",
+      "description": "Layer 0 backward prefetches the embedding state. The embedding itself is outside the two-layer puzzle.",
+      "fixed": true
+    },
+    {
+      "id": "l0-attn-bwd",
+      "label": "Layer 0 attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "durationMs": 4.856768,
+      "startMs": 25.876032,
+      "track": "compute",
+      "description": "Layer 0 attention and normalization backward, ending with flat-gradient packing."
+    },
+    {
+      "id": "l0-rs",
+      "label": "Layer 0 gradient reduce-scatter",
+      "shortLabel": "L0 Gradient RS",
+      "type": "collective",
+      "durationMs": 2.663968,
+      "startMs": 30.725248,
+      "track": "fsdp-rs",
+      "description": "FP32 layer 0 gradient sharding begins about 6 µs after packing and forms the exposed communication tail."
+    },
+    {
+      "id": "embedding-boundary",
+      "label": "Fixed context: embedding backward",
+      "shortLabel": "… Embedding BWD",
+      "type": "bubble",
+      "durationMs": 0.265536,
+      "startMs": 30.7328,
+      "track": "compute",
+      "description": "Embedding gradient kernels execute outside the two-layer puzzle while L0 reduce-scatter runs.",
+      "fixed": true
+    },
+    {
+      "id": "embedding-rs",
+      "label": "Fixed context: embedding gradient reduce-scatter",
+      "shortLabel": "Embedding RS",
+      "type": "collective",
+      "durationMs": 0.02992,
+      "startMs": 33.41136,
+      "track": "fsdp-rs",
+      "description": "The final tiny embedding RS closes the captured backward window.",
+      "fixed": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward",
+      "label": "Forward + prefetch",
+      "blockIds": [
+        "l0-fwd-ag",
+        "l1-fwd-ag",
+        "l0-attn-fwd",
+        "l0-mlp-fwd",
+        "l1-attn-fwd",
+        "l1-mlp-fwd"
+      ]
+    },
+    {
+      "id": "backward",
+      "label": "Backward + prefetch",
+      "blockIds": [
+        "l1-bwd-ag",
+        "l0-bwd-ag",
+        "l1-mlp-bwd",
+        "l1-attn-bwd",
+        "l0-mlp-bwd",
+        "l0-attn-bwd"
+      ]
+    },
+    {
+      "id": "gradient-sharding",
+      "label": "Gradient sharding",
+      "blockIds": [
+        "l1-rs",
+        "l0-rs"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "collective",
+      "weight": 1.43
+    },
+    {
+      "type": "attention",
+      "weight": 2.97
+    },
+    {
+      "type": "collective",
+      "weight": 1.37
+    },
+    {
+      "type": "mlp",
+      "weight": 1.79
+    },
+    {
+      "type": "attention",
+      "weight": 2.41
+    },
+    {
+      "type": "mlp",
+      "weight": 1.79
+    },
+    {
+      "type": "loss",
+      "weight": 1.75
+    },
+    {
+      "type": "mlp",
+      "weight": 4.34
+    },
+    {
+      "type": "attention",
+      "weight": 4.88
+    },
+    {
+      "type": "collective",
+      "weight": 2.78
+    }
+  ]
+}

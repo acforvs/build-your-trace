@@ -1,0 +1,506 @@
+{
+  "id": "tensor-sequence-parallel",
+  "order": 8,
+  "section": "III · Tensor parallelism",
+  "category": "Tensor Parallel",
+  "resourceIds": [
+    "ultrascale",
+    "scaling-training",
+    "torchtitan"
+  ],
+  "title": "Tensor + sequence parallel dense layer",
+  "difficulty": 4,
+  "topology": "TP=4 + SP · 4×H100 · NVLink",
+  "scope": "Layer 0 inside a measured 2-layer BF16 training step",
+  "timelineMode": "absolute",
+  "totalMs": 17.10035,
+  "pxPerMs": 320,
+  "gridSegments": 12,
+  "verification": {
+    "status": "measured",
+    "label": "Measured compiled TorchTitan TP+SP · rank 0 GPU streams",
+    "implementation": "TorchTitan v0.2.0 apply_non_moe_tp compiled per transformer block with TorchInductor",
+    "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 Q heads, 4 KV heads, SwiGLU 12288, sequence 4096 (1024 residual tokens/rank), BF16, TP=4",
+    "measurement": "18.262 ms full step; 17.100 ms displayed GPU window from embedding reduce-scatter through embedding backward",
+    "timeline": "Compiled Nsight timing. Collective semantics and module order are index-correlated against a separate eager module-labeled capture from the identical TorchTitan sharding plan."
+  },
+  "description": [
+    "TorchTitan TP+SP keeps RMSNorm, residuals, and elementwise work sequence-sharded. The norm runs before each input all-gather, making the layout transition explicit instead of folding normalization into attention or MLP.",
+    "Backward mirrors those layout transforms: an output-gradient all-gather precedes local backward, an input-gradient reduce-scatter returns to the sequence-sharded residual stream, and RMSNorm backward then runs on that shard.",
+    "The task asks for Layer 0 only. Layer 1, embedding, output projection, distributed loss, and their measured collectives remain fixed context. TP=4 matches Qwen's four KV heads without introducing unmodeled KV replication."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "tp-comm",
+      "label": "TP/SP collectives",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "embedding-rs",
+      "label": "Fixed context: vocabulary embedding reduce-scatter",
+      "shortLabel": "Embedding RS",
+      "type": "collective",
+      "startMs": 0,
+      "durationMs": 0.941696,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l0-attn-norm-fwd",
+      "label": "Layer 0 attention RMSNorm forward",
+      "shortLabel": "L0 Attn RMSNorm",
+      "type": "attention",
+      "startMs": 0.943424,
+      "durationMs": 0.006176,
+      "track": "compute",
+      "description": "Sequence-parallel RMSNorm runs on the local token shard before the attention input is gathered."
+    },
+    {
+      "id": "l0-attn-fwd-ag",
+      "label": "Layer 0 attention input all-gather",
+      "shortLabel": "L0 Attn Input AG",
+      "type": "collective",
+      "startMs": 0.952416,
+      "durationMs": 1.069024,
+      "track": "tp-comm",
+      "description": "Gather the sequence-sharded residual so column-parallel QKV sees the full token dimension."
+    },
+    {
+      "id": "l0-attn-fwd",
+      "label": "Layer 0 TP attention forward",
+      "shortLabel": "L0 Attention FWD",
+      "type": "attention",
+      "startMs": 2.023232,
+      "durationMs": 0.452928,
+      "track": "compute",
+      "description": "Compiled QKV, RoPE, Flash Attention, and output-projection local work after the input AG."
+    },
+    {
+      "id": "l0-attn-fwd-rs",
+      "label": "Layer 0 attention output reduce-scatter",
+      "shortLabel": "L0 Attn Output RS",
+      "type": "collective",
+      "startMs": 2.478944,
+      "durationMs": 0.319648,
+      "track": "tp-comm",
+      "description": "Sum row-parallel output partials while returning to sequence-sharded residual layout."
+    },
+    {
+      "id": "l0-mlp-norm-fwd",
+      "label": "Layer 0 MLP RMSNorm forward",
+      "shortLabel": "L0 MLP RMSNorm",
+      "type": "mlp",
+      "startMs": 2.800128,
+      "durationMs": 0.00944,
+      "track": "compute",
+      "description": "Sequence-parallel FFN RMSNorm runs before gathering the MLP input."
+    },
+    {
+      "id": "l0-mlp-fwd-ag",
+      "label": "Layer 0 MLP input all-gather",
+      "shortLabel": "L0 MLP Input AG",
+      "type": "collective",
+      "startMs": 2.813696,
+      "durationMs": 0.107392,
+      "track": "tp-comm"
+    },
+    {
+      "id": "l0-mlp-fwd",
+      "label": "Layer 0 TP SwiGLU forward",
+      "shortLabel": "L0 SwiGLU FWD",
+      "type": "mlp",
+      "startMs": 2.923808,
+      "durationMs": 0.472192,
+      "track": "compute",
+      "description": "Compiled gate/up, SiLU and product, and down-projection local work."
+    },
+    {
+      "id": "l0-mlp-fwd-rs",
+      "label": "Layer 0 MLP output reduce-scatter",
+      "shortLabel": "L0 MLP Output RS",
+      "type": "collective",
+      "startMs": 3.400096,
+      "durationMs": 0.1032,
+      "track": "tp-comm"
+    },
+    {
+      "id": "l1-attn-norm-fwd",
+      "label": "Fixed context: layer 1 attention RMSNorm",
+      "shortLabel": "L1 Attn RMSNorm",
+      "type": "attention",
+      "startMs": 3.50496,
+      "durationMs": 0.013728,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-fwd-ag",
+      "label": "Fixed context: layer 1 attention input all-gather",
+      "shortLabel": "L1 Attn AG",
+      "type": "collective",
+      "startMs": 3.521952,
+      "durationMs": 0.214976,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-fwd",
+      "label": "Fixed context: layer 1 attention forward",
+      "shortLabel": "L1 Attention FWD",
+      "type": "attention",
+      "startMs": 3.739392,
+      "durationMs": 0.441664,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-fwd-rs",
+      "label": "Fixed context: layer 1 attention output reduce-scatter",
+      "shortLabel": "L1 Attn RS",
+      "type": "collective",
+      "startMs": 4.184032,
+      "durationMs": 0.150304,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-norm-fwd",
+      "label": "Fixed context: layer 1 MLP RMSNorm",
+      "shortLabel": "L1 MLP RMSNorm",
+      "type": "mlp",
+      "startMs": 4.335936,
+      "durationMs": 0.008224,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-fwd-ag",
+      "label": "Fixed context: layer 1 MLP input all-gather",
+      "shortLabel": "L1 MLP AG",
+      "type": "collective",
+      "startMs": 4.3472,
+      "durationMs": 0.107648,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-fwd",
+      "label": "Fixed context: layer 1 SwiGLU forward",
+      "shortLabel": "L1 SwiGLU FWD",
+      "type": "mlp",
+      "startMs": 4.457472,
+      "durationMs": 0.455807,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-fwd-rs",
+      "label": "Fixed context: layer 1 MLP output reduce-scatter",
+      "shortLabel": "L1 MLP RS",
+      "type": "collective",
+      "startMs": 4.916799,
+      "durationMs": 0.102976,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "output-loss",
+      "label": "Fixed context: output input gather, final norm, distributed loss, and backward setup",
+      "shortLabel": "Output + Loss",
+      "type": "loss",
+      "startMs": 5.019775,
+      "durationMs": 3.434816,
+      "track": "compute",
+      "fixed": true,
+      "description": "Fixed boundary envelope; output-input AG and three FP32 loss all-reduces remain visible on the communication stream."
+    },
+    {
+      "id": "output-fwd-ag",
+      "label": "Fixed context: output projection input all-gather",
+      "shortLabel": "Output Input AG",
+      "type": "collective",
+      "startMs": 5.043679,
+      "durationMs": 0.11792,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "loss-ar-0",
+      "label": "Fixed context: distributed cross-entropy all-reduce 1",
+      "shortLabel": "Loss AR 1",
+      "type": "collective",
+      "startMs": 5.224031,
+      "durationMs": 0.724384,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "loss-ar-1",
+      "label": "Fixed context: distributed cross-entropy all-reduce 2",
+      "shortLabel": "Loss AR 2",
+      "type": "collective",
+      "startMs": 5.963423,
+      "durationMs": 0.329888,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "loss-ar-2",
+      "label": "Fixed context: distributed cross-entropy all-reduce 3",
+      "shortLabel": "Loss AR 3",
+      "type": "collective",
+      "startMs": 6.336255,
+      "durationMs": 0.673472,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "output-bwd-rs",
+      "label": "Fixed context: output projection input-gradient reduce-scatter",
+      "shortLabel": "Output dX RS",
+      "type": "collective",
+      "startMs": 8.454591,
+      "durationMs": 2.135136,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-bwd-ag",
+      "label": "Fixed context: layer 1 MLP output-gradient all-gather",
+      "shortLabel": "L1 MLP dY AG",
+      "type": "collective",
+      "startMs": 10.613695,
+      "durationMs": 0.924576,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-bwd",
+      "label": "Fixed context: layer 1 SwiGLU backward",
+      "shortLabel": "L1 SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 11.539871,
+      "durationMs": 0.890527,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-bwd-rs",
+      "label": "Fixed context: layer 1 MLP input-gradient reduce-scatter",
+      "shortLabel": "L1 MLP dX RS",
+      "type": "collective",
+      "startMs": 12.433822,
+      "durationMs": 0.147168,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-norm-bwd",
+      "label": "Fixed context: layer 1 MLP RMSNorm backward",
+      "shortLabel": "L1 MLP Norm BWD",
+      "type": "mlp",
+      "startMs": 12.582686,
+      "durationMs": 0.01456,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-bwd-ag",
+      "label": "Fixed context: layer 1 attention output-gradient all-gather",
+      "shortLabel": "L1 Attn dY AG",
+      "type": "collective",
+      "startMs": 12.600542,
+      "durationMs": 0.107008,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-bwd",
+      "label": "Fixed context: layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "startMs": 12.70995,
+      "durationMs": 1.058208,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-bwd-rs",
+      "label": "Fixed context: layer 1 attention input-gradient reduce-scatter",
+      "shortLabel": "L1 Attn dX RS",
+      "type": "collective",
+      "startMs": 13.771582,
+      "durationMs": 0.10688,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "l1-attn-norm-bwd",
+      "label": "Fixed context: layer 1 attention RMSNorm backward",
+      "shortLabel": "L1 Attn Norm BWD",
+      "type": "attention",
+      "startMs": 13.880094,
+      "durationMs": 0.143264,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-mlp-bwd-ag",
+      "label": "Layer 0 MLP output-gradient all-gather",
+      "shortLabel": "L0 MLP dY AG",
+      "type": "collective",
+      "startMs": 14.026718,
+      "durationMs": 0.297056,
+      "track": "tp-comm",
+      "description": "Reverse the forward output RS so local row-parallel down-projection backward receives the full output gradient."
+    },
+    {
+      "id": "l0-mlp-bwd",
+      "label": "Layer 0 TP SwiGLU backward",
+      "shortLabel": "L0 SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 14.325342,
+      "durationMs": 0.90192,
+      "track": "compute"
+    },
+    {
+      "id": "l0-mlp-bwd-rs",
+      "label": "Layer 0 MLP input-gradient reduce-scatter",
+      "shortLabel": "L0 MLP dX RS",
+      "type": "collective",
+      "startMs": 15.231582,
+      "durationMs": 0.110432,
+      "track": "tp-comm",
+      "description": "Sum column-parallel gate/up input-gradient partials and return to sequence-sharded residual layout."
+    },
+    {
+      "id": "l0-mlp-norm-bwd",
+      "label": "Layer 0 MLP RMSNorm backward",
+      "shortLabel": "L0 MLP Norm BWD",
+      "type": "mlp",
+      "startMs": 15.343646,
+      "durationMs": 0.075456,
+      "track": "compute",
+      "description": "RMSNorm backward runs after the MLP input gradient has returned to sequence-sharded layout."
+    },
+    {
+      "id": "l0-attn-bwd-ag",
+      "label": "Layer 0 attention output-gradient all-gather",
+      "shortLabel": "L0 Attn dY AG",
+      "type": "collective",
+      "startMs": 15.423582,
+      "durationMs": 0.10912,
+      "track": "tp-comm"
+    },
+    {
+      "id": "l0-attn-bwd",
+      "label": "Layer 0 TP attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "startMs": 15.534238,
+      "durationMs": 1.059072,
+      "track": "compute"
+    },
+    {
+      "id": "l0-attn-bwd-rs",
+      "label": "Layer 0 attention input-gradient reduce-scatter",
+      "shortLabel": "L0 Attn dX RS",
+      "type": "collective",
+      "startMs": 16.59779,
+      "durationMs": 0.104384,
+      "track": "tp-comm"
+    },
+    {
+      "id": "l0-attn-norm-bwd",
+      "label": "Layer 0 attention RMSNorm backward",
+      "shortLabel": "L0 Attn Norm BWD",
+      "type": "attention",
+      "startMs": 16.70355,
+      "durationMs": 0.073152,
+      "track": "compute"
+    },
+    {
+      "id": "embedding-bwd-ag",
+      "label": "Fixed context: embedding output-gradient all-gather",
+      "shortLabel": "Embedding dY AG",
+      "type": "collective",
+      "startMs": 16.78019,
+      "durationMs": 0.108768,
+      "track": "tp-comm",
+      "fixed": true
+    },
+    {
+      "id": "embedding-bwd",
+      "label": "Fixed context: embedding backward",
+      "shortLabel": "… Embedding BWD",
+      "type": "bubble",
+      "startMs": 16.891582,
+      "durationMs": 0.208768,
+      "track": "compute",
+      "fixed": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward",
+      "label": "Layer 0 forward",
+      "blockIds": [
+        "l0-attn-norm-fwd",
+        "l0-attn-fwd-ag",
+        "l0-attn-fwd",
+        "l0-attn-fwd-rs",
+        "l0-mlp-norm-fwd",
+        "l0-mlp-fwd-ag",
+        "l0-mlp-fwd",
+        "l0-mlp-fwd-rs"
+      ]
+    },
+    {
+      "id": "backward",
+      "label": "Layer 0 backward",
+      "blockIds": [
+        "l0-mlp-bwd-ag",
+        "l0-mlp-bwd",
+        "l0-mlp-bwd-rs",
+        "l0-mlp-norm-bwd",
+        "l0-attn-bwd-ag",
+        "l0-attn-bwd",
+        "l0-attn-bwd-rs",
+        "l0-attn-norm-bwd"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "collective",
+      "weight": 1.07
+    },
+    {
+      "type": "attention",
+      "weight": 0.45
+    },
+    {
+      "type": "collective",
+      "weight": 0.32
+    },
+    {
+      "type": "mlp",
+      "weight": 0.47
+    },
+    {
+      "type": "collective",
+      "weight": 0.3
+    },
+    {
+      "type": "attention",
+      "weight": 1.06
+    }
+  ]
+}

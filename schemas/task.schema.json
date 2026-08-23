@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/build-your-trace/task.schema.json",
+  "title": "Build Your Trace task",
+  "type": "object",
+  "required": ["id", "title", "summary", "difficulty", "tracks", "blocks"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "order": { "type": "number", "minimum": 1 },
+    "section": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "timelineMode": { "enum": ["absolute", "phased"] },
+    "totalMs": { "type": "number", "exclusiveMinimum": 0 },
+    "debrief": {
+      "type": "object",
+      "required": ["dependencies"],
+      "properties": {
+        "dependencies": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["fromBlockId", "toBlockId", "label", "explanation"],
+            "properties": {
+              "fromBlockId": { "type": "string", "minLength": 1 },
+              "toBlockId": { "type": "string", "minLength": 1 },
+              "fromAnchor": { "enum": ["start", "center", "end"] },
+              "toAnchor": { "enum": ["start", "center", "end"] },
+              "label": { "type": "string", "minLength": 1 },
+              "explanation": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "tracks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "subtitle": { "type": "string" }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "type", "track", "durationMs"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "shortLabel": { "type": "string" },
+          "type": { "enum": ["attention", "mlp", "collective", "routing", "optimizer", "loss", "bubble"] },
+          "track": { "type": "string", "minLength": 1 },
+          "startMs": { "type": "number", "minimum": 0 },
+          "durationMs": { "type": "number", "exclusiveMinimum": 0 },
+          "fixed": { "type": "boolean" },
+          "description": { "type": "string" }
+        }
+      }
+    }
+  }
+}

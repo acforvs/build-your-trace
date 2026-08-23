@@ -1,0 +1,163 @@
+{
+  "id": "ddp-terminal",
+  "order": 5,
+  "section": "II · Data parallelism",
+  "category": "Data Parallel",
+  "resourceIds": [
+    "pytorch-ddp",
+    "scaling-training",
+    "ultrascale"
+  ],
+  "title": "DDP with terminal gradient sync",
+  "difficulty": 2,
+  "topology": "DDP=8 · 8×H100 · NVSwitch",
+  "scope": "2 dense Qwen-shaped layers · one 852 MiB BF16 bucket",
+  "timelineMode": "absolute",
+  "totalMs": 28.610728,
+  "pxPerMs": 70,
+  "gridSegments": 12,
+  "verification": {
+    "status": "measured",
+    "label": "Measured PyTorch DDP · rank 0 compute and NCCL streams",
+    "implementation": "PyTorch 2.9.1 DistributedDataParallel using one 2048 MiB reducer bucket and the default all-reduce hook",
+    "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 Q heads, 4 KV heads, SwiGLU 12288, sequence 4096, BF16 gradients, DDP=8",
+    "measurement": "29.271 ms synchronized step; 28.611 ms displayed rank-0 GPU window; 893,428,736 gradient bytes",
+    "timeline": "Clean Nsight timing correlated with a separate module-labeled capture through rank-0 stream-7 kernel order."
+  },
+  "description": [
+    "This uses the real DDP reducer with a bucket cap larger than the complete 852 MiB BF16 gradient set. It is the concrete DDP equivalent of an unbucketed schedule: the only gradient all-reduce cannot launch until the final embedding gradient makes the single bucket ready.",
+    "The all-reduce is therefore a fully exposed 4.00 ms tail. Forward and root backward are fixed context; place the layer backward sequence, final bucket preparation, and terminal synchronization."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "ddp-comm",
+      "label": "DDP gradient all-reduce",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "forward-loss",
+      "label": "Fixed context: two-layer forward and cross-entropy",
+      "shortLabel": "Forward + loss",
+      "type": "bubble",
+      "startMs": 0,
+      "durationMs": 7.927329,
+      "track": "compute",
+      "fixed": true,
+      "description": "The replicated model executes the same two-layer forward graph independently on every data-parallel rank."
+    },
+    {
+      "id": "root-backward",
+      "label": "Fixed context: output projection and final norm backward",
+      "shortLabel": "Output + norm BWD",
+      "type": "loss",
+      "startMs": 7.951329,
+      "durationMs": 0.134144,
+      "track": "compute",
+      "fixed": true,
+      "description": "Output and final-normalization gradients are the first parameter gradients produced by reverse mode."
+    },
+    {
+      "id": "l1-mlp-backward",
+      "label": "Layer 1 SwiGLU backward",
+      "shortLabel": "L1 SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 8.093121,
+      "durationMs": 3.518112,
+      "track": "compute",
+      "description": "Compute layer 1 down, up, and gate projection gradients before traversing its attention block."
+    },
+    {
+      "id": "l1-attention-backward",
+      "label": "Layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "startMs": 11.802241,
+      "durationMs": 4.00752,
+      "track": "compute",
+      "description": "Backpropagate through output projection, Flash Attention, RoPE, QKV projections, and normalization."
+    },
+    {
+      "id": "l0-mlp-backward",
+      "label": "Layer 0 SwiGLU backward",
+      "shortLabel": "L0 SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 15.980097,
+      "durationMs": 3.510081,
+      "track": "compute"
+    },
+    {
+      "id": "l0-attention-backward",
+      "label": "Layer 0 attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "startMs": 19.680866,
+      "durationMs": 4.010464,
+      "track": "compute"
+    },
+    {
+      "id": "embedding-bucket-finalize",
+      "label": "Embedding backward and terminal bucket averaging",
+      "shortLabel": "Embedding + bucket ready",
+      "type": "bubble",
+      "startMs": 23.73933,
+      "durationMs": 0.883552,
+      "track": "compute",
+      "description": "Produce the final embedding gradient, then average the complete BF16 bucket before launching NCCL. No earlier parameter gradient can trigger communication because every gradient belongs to this one bucket."
+    },
+    {
+      "id": "terminal-gradient-ar",
+      "label": "All gradients: 852 MiB all-reduce",
+      "shortLabel": "All gradients AR · 852 MiB",
+      "type": "collective",
+      "startMs": 24.612006,
+      "durationMs": 3.998722,
+      "track": "ddp-comm",
+      "description": "All-reduce 893,428,736 BF16 gradient bytes across eight replicas. It has zero measured compute overlap and forms a 4.00 ms exposed tail."
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "backward",
+      "label": "Reverse layer order",
+      "blockIds": [
+        "l1-mlp-backward",
+        "l1-attention-backward",
+        "l0-mlp-backward",
+        "l0-attention-backward",
+        "embedding-bucket-finalize"
+      ]
+    },
+    {
+      "id": "synchronize",
+      "label": "Gradient synchronization",
+      "blockIds": [
+        "terminal-gradient-ar"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "bubble",
+      "weight": 7.9
+    },
+    {
+      "type": "mlp",
+      "weight": 3.5
+    },
+    {
+      "type": "attention",
+      "weight": 4
+    },
+    {
+      "type": "collective",
+      "weight": 4
+    }
+  ]
+}

@@ -1,0 +1,858 @@
+{
+  "id": "fsdp-moe-ep",
+  "title": "Two-layer expert-FSDP + expert parallelism",
+  "topology": "Dense FSDP=8 · EP=4 · Expert FSDP=2 · NVLink",
+  "scope": "Complete forward + loss + backward; optimizer excluded",
+  "totalMs": 68.372,
+  "variants": [
+    {
+      "id": "nvlink",
+      "label": "Measured NVLink",
+      "default": true
+    }
+  ],
+  "verification": {
+    "status": "measured",
+    "label": "Measured, FQN-labeled, and Perfetto-audited on 8× H100",
+    "implementation": "TorchTitan v0.2.0 FSDP2 with an explicit dependency-ordered prefetch graph",
+    "workload": "Batch 1 × 4096 tokens per rank; BF16; 2 layers; hidden 4096; 128 experts; top-8; expert hidden 1536.",
+    "measurement": "69.189 ms end-to-end; 68.372 ms rank-0 collective window. Clean timing, FQN-labeled Nsight, and expanded-label Perfetto captures were recorded separately from the same frozen script.",
+    "timeline": "Actual rank-0 GPU offsets and kernel durations from the clean capture. FSDP module assignments are direct runtime-to-FQN correlations from the labeled capture."
+  },
+  "description": [
+    "This challenge shows the complete captured scope: token embedding, two Qwen3 MoE layers, final norm, output projection, cross-entropy, and backward through the embedding. The optimizer step is deliberately outside this benchmark and is not implied by the timeline.",
+    "The prefetch graph is explicit and dependency-ordered. Forward queues L0 dense → L0 experts → L1 dense → L1 experts. Backward queues L1 dense → L1 experts → L0 dense → L0 experts. A labeled Perfetto trace and a separate FQN-labeled Nsight capture verify this order.",
+    "The local attention, routing, layout, and gradient-pack kernels are fixed context. Place FSDP all-gathers and reduce-scatters together with one forward and one backward EP path, then identify where expert compute waits for both parameter and activation readiness."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "fsdp-ag",
+      "label": "FSDP parameter all-gather",
+      "subtitle": "Rank 0 · NCCL stream 28"
+    },
+    {
+      "id": "ep-a2a",
+      "label": "EP activation exchange",
+      "subtitle": "Rank 0 · NCCL stream 35"
+    },
+    {
+      "id": "fsdp-rs",
+      "label": "FSDP gradient reduce-scatter",
+      "subtitle": "Rank 0 · NCCL stream 32"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "embedding-fwd-ag",
+      "label": "Token-embedding parameter all-gather",
+      "shortLabel": "Embedding AG",
+      "type": "collective",
+      "durationMs": 0.237,
+      "startMs": 0,
+      "track": "fsdp-ag",
+      "description": "Materialize the sharded token embedding before its lookup.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dense-ag",
+      "label": "Layer 0 dense-parameter all-gather",
+      "shortLabel": "L0 Dense AG",
+      "type": "collective",
+      "durationMs": 0.863,
+      "startMs": 0.685,
+      "track": "fsdp-ag",
+      "description": "Embedding completion explicitly prefetches the layer 0 attention and router parameters."
+    },
+    {
+      "id": "embedding-fwd",
+      "label": "Token embedding lookup",
+      "shortLabel": "Embedding lookup · 65 µs",
+      "type": "attention",
+      "durationMs": 0.065,
+      "startMs": 1.303,
+      "track": "compute",
+      "description": "Gather token embeddings while layer 0 parameters are being prefetched. The marker preserves the measured 65 µs duration while keeping this tiny operation visible.",
+      "fixed": true,
+      "marker": true
+    },
+    {
+      "id": "layer0-expert-ag",
+      "label": "Layer 0 expert-weight all-gather",
+      "shortLabel": "L0 Expert AG · 1.125 GiB",
+      "type": "collective",
+      "durationMs": 2.588,
+      "startMs": 2.315,
+      "track": "fsdp-ag",
+      "description": "Materialize layer 0 experts before any layer 1 parameter collective is allowed onto the FSDP stream."
+    },
+    {
+      "id": "layer0-attn-fwd",
+      "label": "Layer 0 attention forward",
+      "shortLabel": "L0 Attention",
+      "type": "attention",
+      "durationMs": 3.654,
+      "startMs": 2.756,
+      "track": "compute",
+      "description": "Normalization, QKV GEMMs, RoPE, Flash Attention, output GEMM, and residual work overlap L0 expert materialization.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-dense-ag",
+      "label": "Prefetch layer 1 dense parameters",
+      "shortLabel": "L1 Dense AG",
+      "type": "collective",
+      "durationMs": 0.903,
+      "startMs": 4.905,
+      "track": "fsdp-ag",
+      "description": "Starts only after the layer 0 expert all-gather completes."
+    },
+    {
+      "id": "layer1-expert-ag-prefetch",
+      "label": "Prefetch layer 1 expert weights",
+      "shortLabel": "L1 Expert AG · 1.125 GiB",
+      "type": "collective",
+      "durationMs": 3.776,
+      "startMs": 5.865,
+      "track": "fsdp-ag",
+      "description": "Prefetch layer 1 experts while layer 0 routes and exchanges tokens."
+    },
+    {
+      "id": "layer0-router-fwd",
+      "label": "Layer 0 router and top-k",
+      "shortLabel": "L0 Router + TopK",
+      "type": "routing",
+      "durationMs": 0.406,
+      "startMs": 6.412,
+      "track": "compute",
+      "description": "Compute router logits, softmax, top-8 selection, and expert histograms.",
+      "fixed": true,
+      "callout": true
+    },
+    {
+      "id": "layer0-dispatch-pack",
+      "label": "Layer 0 dispatch activation pack",
+      "shortLabel": "L0 Dispatch Pack",
+      "type": "routing",
+      "durationMs": 0.149,
+      "startMs": 6.818,
+      "track": "compute",
+      "description": "Gather routed token activations into the EP send layout.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-expert-copyout",
+      "label": "Layer 0 expert FSDP parameter copy-out",
+      "shortLabel": "L0 Expert Copy-out",
+      "type": "routing",
+      "durationMs": 1.003,
+      "startMs": 6.983,
+      "track": "compute",
+      "description": "Split the gathered flat FSDP buffer into gate, up, and down expert weight views before grouped GEMM.",
+      "fixed": true
+    },
+    {
+      "id": "output-ag-host-gate",
+      "label": "Host/EP control-flow gate before final norm and output AG",
+      "shortLabel": "Host reaches L1 pre-forward",
+      "type": "bubble",
+      "durationMs": 1.219,
+      "startMs": 9.641,
+      "track": "fsdp-ag",
+      "description": "No NCCL kernel is queued here. The CPU must finish the L0 forward control path, including EP synchronization points, and enter L1 pre-forward before it launches the final norm/output prefetch. This is launch timing, not a GPU data dependency.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dispatch-meta",
+      "label": "Layer 0 dispatch metadata exchange",
+      "shortLabel": "L0 Counts",
+      "type": "collective",
+      "durationMs": 0.102,
+      "startMs": 7.989,
+      "track": "ep-a2a",
+      "description": "Exchange per-destination token counts before the payload all-to-all.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dispatch",
+      "label": "Layer 0 EP dispatch payload all-to-all",
+      "shortLabel": "L0 Dispatch",
+      "type": "collective",
+      "durationMs": 1.579,
+      "startMs": 8.258,
+      "track": "ep-a2a",
+      "description": "Send routed token activations to expert-owner ranks."
+    },
+    {
+      "id": "layer0-permute",
+      "label": "Layer 0 post-dispatch permute",
+      "shortLabel": "L0 Permute",
+      "type": "routing",
+      "durationMs": 0.378,
+      "startMs": 9.84,
+      "track": "compute",
+      "description": "Regroup received tokens by local expert and construct grouped-GEMM offsets.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-swiglu-fwd",
+      "label": "Layer 0 grouped-GEMM SwiGLU forward",
+      "shortLabel": "L0 SwiGLU FWD",
+      "type": "mlp",
+      "durationMs": 2.692,
+      "startMs": 10.235,
+      "track": "compute",
+      "description": "Grouped gate and up GEMMs, SiLU and multiply, then grouped down GEMM."
+    },
+    {
+      "id": "output-forward-ag",
+      "label": "Final norm and output parameter all-gather",
+      "shortLabel": "Output AG",
+      "type": "collective",
+      "durationMs": 1.546,
+      "startMs": 10.86,
+      "track": "fsdp-ag",
+      "description": "Prefetch the shared final-norm/output FSDP state while layer 0 experts execute.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-unpermute",
+      "label": "Layer 0 pre-combine unpermute",
+      "shortLabel": "L0 Unpermute",
+      "type": "routing",
+      "durationMs": 0.64,
+      "startMs": 12.934,
+      "track": "compute",
+      "description": "Undo expert-major layout before returning expert outputs.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-combine",
+      "label": "Layer 0 EP combine all-to-all",
+      "shortLabel": "L0 Combine",
+      "type": "collective",
+      "durationMs": 0.608,
+      "startMs": 13.586,
+      "track": "ep-a2a",
+      "description": "Return expert outputs to token-owner ranks."
+    },
+    {
+      "id": "layer0-restore",
+      "label": "Layer 0 token unpermute, routing-weighted combine, and residual",
+      "shortLabel": "L0 Token Combine",
+      "type": "routing",
+      "durationMs": 1.659,
+      "startMs": 14.197,
+      "track": "compute",
+      "description": "Scatter returned expert outputs to their original token/top-k positions, multiply by routing probabilities, reduce the eight expert contributions per token, and add the residual. This is large because several memory-bound kernels process roughly 256 MiB of routed BF16 activations.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-attn-fwd",
+      "label": "Layer 1 attention forward",
+      "shortLabel": "L1 Attention",
+      "type": "attention",
+      "durationMs": 2.024,
+      "startMs": 16.043,
+      "track": "compute",
+      "description": "Layer 1 begins after its dense and expert prefetches have completed.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-router-fwd",
+      "label": "Layer 1 router and top-k",
+      "shortLabel": "L1 Router + TopK",
+      "type": "routing",
+      "durationMs": 0.28,
+      "startMs": 18.067,
+      "track": "compute",
+      "description": "Compute router logits, softmax, top-8 selection, and expert histograms.",
+      "fixed": true,
+      "callout": true
+    },
+    {
+      "id": "layer1-dispatch-pack",
+      "label": "Layer 1 dispatch activation pack",
+      "shortLabel": "L1 Dispatch Pack",
+      "type": "routing",
+      "durationMs": 0.109,
+      "startMs": 18.347,
+      "track": "compute",
+      "description": "Gather routed activations into the EP send layout.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-expert-copyout",
+      "label": "Layer 1 expert FSDP parameter copy-out",
+      "shortLabel": "L1 Expert Copy-out",
+      "type": "routing",
+      "durationMs": 0.834,
+      "startMs": 18.464,
+      "track": "compute",
+      "description": "Expose layer 1's prefetched flat expert buffer as grouped-GEMM weight views when the experts are first used.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-dispatch-meta",
+      "label": "Layer 1 dispatch metadata exchange",
+      "shortLabel": "L1 Counts",
+      "type": "collective",
+      "durationMs": 0.098,
+      "startMs": 19.3,
+      "track": "ep-a2a",
+      "description": "Exchange routed-token counts.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-dispatch",
+      "label": "Layer 1 EP dispatch payload all-to-all",
+      "shortLabel": "L1 Dispatch",
+      "type": "collective",
+      "durationMs": 0.659,
+      "startMs": 19.548,
+      "track": "ep-a2a",
+      "description": "Send layer 1 routed activations to expert owners.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-permute",
+      "label": "Layer 1 post-dispatch permute",
+      "shortLabel": "L1 Permute",
+      "type": "routing",
+      "durationMs": 0.38,
+      "startMs": 20.211,
+      "track": "compute",
+      "description": "Regroup received activations by local expert.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-swiglu-fwd",
+      "label": "Layer 1 grouped-GEMM SwiGLU forward",
+      "shortLabel": "L1 SwiGLU FWD",
+      "type": "mlp",
+      "durationMs": 1.885,
+      "startMs": 20.607,
+      "track": "compute",
+      "description": "Three grouped expert GEMMs and SwiGLU activation.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-unpermute",
+      "label": "Layer 1 pre-combine unpermute",
+      "shortLabel": "L1 Unpermute",
+      "type": "routing",
+      "durationMs": 0.634,
+      "startMs": 22.499,
+      "track": "compute",
+      "description": "Undo local expert-major ordering before combine.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-combine",
+      "label": "Layer 1 EP combine all-to-all",
+      "shortLabel": "L1 Combine",
+      "type": "collective",
+      "durationMs": 0.67,
+      "startMs": 23.146,
+      "track": "ep-a2a",
+      "description": "Return layer 1 expert outputs to token owners.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-restore",
+      "label": "Layer 1 token unpermute, routing-weighted combine, and residual",
+      "shortLabel": "L1 Token Combine",
+      "type": "routing",
+      "durationMs": 1.666,
+      "startMs": 23.819,
+      "track": "compute",
+      "description": "Restore token/top-k positions, apply routing probabilities, reduce expert contributions, and add the residual over the large routed activation tensor.",
+      "fixed": true
+    },
+    {
+      "id": "output-loss",
+      "label": "Final norm, output projection, and cross-entropy",
+      "shortLabel": "Output + Loss",
+      "type": "loss",
+      "durationMs": 0.242,
+      "startMs": 25.488,
+      "track": "compute",
+      "description": "Complete the captured forward and evaluate cross-entropy.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-bwd-dense-ag",
+      "label": "Backward prefetch: layer 1 dense parameters",
+      "shortLabel": "L1 Dense BWD AG",
+      "type": "collective",
+      "durationMs": 0.952,
+      "startMs": 25.627,
+      "track": "fsdp-ag",
+      "description": "The output module prefetches the last layer's dense parameters first."
+    },
+    {
+      "id": "output-loss-bwd",
+      "label": "Loss, output projection, and final norm backward",
+      "shortLabel": "Output BWD",
+      "type": "loss",
+      "durationMs": 0.51,
+      "startMs": 25.747,
+      "track": "compute",
+      "description": "Backward through the root loss and output stack.",
+      "fixed": true
+    },
+    {
+      "id": "output-rs",
+      "label": "Final norm and output gradient reduce-scatter",
+      "shortLabel": "Output RS",
+      "type": "collective",
+      "durationMs": 0.213,
+      "startMs": 26.581,
+      "track": "fsdp-rs",
+      "description": "Shard the root FSDP state's gradients."
+    },
+    {
+      "id": "layer1-expert-bwd-ag",
+      "label": "Backward prefetch: layer 1 expert weights",
+      "shortLabel": "L1 Expert BWD AG",
+      "type": "collective",
+      "durationMs": 3.722,
+      "startMs": 27.405,
+      "track": "fsdp-ag",
+      "description": "Materialize layer 1 experts before any layer 0 backward prefetch."
+    },
+    {
+      "id": "layer1-dense-bwd-copyout",
+      "label": "Layer 1 dense backward parameter copy-out",
+      "shortLabel": "L1 Dense Copy-out",
+      "type": "routing",
+      "durationMs": 0.153,
+      "startMs": 26.604,
+      "track": "compute",
+      "description": "Expose the gathered layer 1 dense flat parameter before its backward use.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-token-combine-bwd",
+      "label": "Layer 1 local unpermute and routing-weight backward",
+      "shortLabel": "L1 Token Restore BWD",
+      "type": "routing",
+      "durationMs": 3.973,
+      "startMs": 26.764,
+      "track": "compute",
+      "description": "Local backward through token-order restoration and routing-weighted expert-output combination. The later dY all-to-all is the communication backward of the forward combine collective.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-expert-bwd-wait",
+      "label": "Exposed wait for layer 1 expert weights",
+      "shortLabel": "Wait: L1 Expert AG",
+      "type": "bubble",
+      "durationMs": 0.406,
+      "startMs": 30.737,
+      "track": "compute",
+      "description": "The remaining L1 expert all-gather is on the critical path.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-bwd-dense-ag",
+      "label": "Backward prefetch: layer 0 dense parameters",
+      "shortLabel": "L0 Dense BWD AG",
+      "type": "collective",
+      "durationMs": 1.071,
+      "startMs": 31.131,
+      "track": "fsdp-ag",
+      "description": "Starts only after layer 1 expert materialization completes."
+    },
+    {
+      "id": "layer1-expert-bwd-copyout",
+      "label": "Layer 1 expert parameter copy-out",
+      "shortLabel": "L1 Expert Copy-out",
+      "type": "routing",
+      "durationMs": 0.988,
+      "startMs": 31.143,
+      "track": "compute",
+      "description": "Expose the gathered flat parameter as expert weight views.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-expert-bwd-prefetch",
+      "label": "Backward prefetch: layer 0 expert weights",
+      "shortLabel": "L0 Expert BWD AG",
+      "type": "collective",
+      "durationMs": 2.908,
+      "startMs": 32.205,
+      "track": "fsdp-ag",
+      "description": "Prefetch the next backward layer's experts while layer 1 expert backward runs."
+    },
+    {
+      "id": "layer1-dy-a2a",
+      "label": "Layer 1 dY all-to-all: token owners to expert owners",
+      "shortLabel": "L1 dY A2A",
+      "type": "collective",
+      "durationMs": 1.226,
+      "startMs": 32.135,
+      "track": "ep-a2a",
+      "description": "Send expert-output gradients from token-owner ranks to expert-owner ranks."
+    },
+    {
+      "id": "layer1-unpermute-bwd",
+      "label": "Layer 1 unpermute backward",
+      "shortLabel": "L1 Unpermute BWD",
+      "type": "routing",
+      "durationMs": 0.617,
+      "startMs": 33.366,
+      "track": "compute",
+      "description": "Recreate expert-major gradient layout.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-swiglu-bwd",
+      "label": "Layer 1 grouped-GEMM SwiGLU backward",
+      "shortLabel": "L1 SwiGLU BWD",
+      "type": "mlp",
+      "durationMs": 4.815,
+      "startMs": 33.992,
+      "track": "compute",
+      "description": "Grouped gradI and gradW GEMMs for gate, up, and down projections."
+    },
+    {
+      "id": "layer1-permute-bwd",
+      "label": "Layer 1 permute backward",
+      "shortLabel": "L1 Permute BWD",
+      "type": "routing",
+      "durationMs": 0.763,
+      "startMs": 38.807,
+      "track": "compute",
+      "description": "Undo dispatch-side permutation in backward.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-dx-a2a",
+      "label": "Layer 1 dX all-to-all: expert owners to token owners",
+      "shortLabel": "L1 dX A2A",
+      "type": "collective",
+      "durationMs": 0.643,
+      "startMs": 39.574,
+      "track": "ep-a2a",
+      "description": "Return expert-input gradients from expert-owner ranks to token-owner ranks."
+    },
+    {
+      "id": "layer1-expert-grad-pack",
+      "label": "Layer 1 expert flat-gradient pack",
+      "shortLabel": "L1 Expert Grad Pack",
+      "type": "routing",
+      "durationMs": 1.891,
+      "startMs": 40.408,
+      "track": "compute",
+      "description": "Pack expert gradients; expert reduce-scatter starts about 5 µs later.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-expert-rs",
+      "label": "Layer 1 expert-gradient reduce-scatter",
+      "shortLabel": "L1 Expert RS",
+      "type": "collective",
+      "durationMs": 5.092,
+      "startMs": 42.304,
+      "track": "fsdp-rs",
+      "description": "Shard expert gradients while router and attention backward continue."
+    },
+    {
+      "id": "layer1-route-bwd",
+      "label": "Layer 1 restore activation-gradient order",
+      "shortLabel": "L1 Restore BWD",
+      "type": "routing",
+      "durationMs": 0.639,
+      "startMs": 42.318,
+      "track": "compute",
+      "description": "Restore token-major activation gradients after dX exchange.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-router-bwd",
+      "label": "Layer 1 router backward",
+      "shortLabel": "L1 Router BWD",
+      "type": "routing",
+      "durationMs": 0.481,
+      "startMs": 42.962,
+      "track": "compute",
+      "description": "Backpropagate routing scores and selected-expert weights.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-attn-bwd",
+      "label": "Layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "durationMs": 4.93,
+      "startMs": 43.493,
+      "track": "compute",
+      "description": "Dense attention backward overlaps the expert-gradient reduce-scatter.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-dense-grad-pack",
+      "label": "Layer 1 dense flat-gradient pack",
+      "shortLabel": "L1 Dense Grad Pack",
+      "type": "routing",
+      "durationMs": 0.23,
+      "startMs": 48.59,
+      "track": "compute",
+      "description": "Pack dense gradients immediately before dense reduce-scatter.",
+      "fixed": true
+    },
+    {
+      "id": "layer1-dense-rs",
+      "label": "Layer 1 dense-gradient reduce-scatter",
+      "shortLabel": "L1 Dense RS",
+      "type": "collective",
+      "durationMs": 0.937,
+      "startMs": 48.825,
+      "track": "fsdp-rs",
+      "description": "Shard layer 1 dense gradients."
+    },
+    {
+      "id": "layer0-dense-bwd-copyout",
+      "label": "Layer 0 dense backward parameter copy-out",
+      "shortLabel": "L0 Dense Copy-out",
+      "type": "routing",
+      "durationMs": 0.124,
+      "startMs": 48.838,
+      "track": "compute",
+      "description": "Expose the prefetched layer 0 dense flat parameter before backward use.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-token-combine-bwd",
+      "label": "Layer 0 token-unpermute and routing-weighted combine backward",
+      "shortLabel": "L0 Token Combine BWD",
+      "type": "routing",
+      "durationMs": 2.162,
+      "startMs": 48.966,
+      "track": "compute",
+      "description": "Backward through token-order restoration and routing-weighted expert output combination while layer 1 dense gradients are sharded.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-expert-bwd-copyout",
+      "label": "Layer 0 expert backward parameter copy-out",
+      "shortLabel": "L0 Expert Copy-out",
+      "type": "routing",
+      "durationMs": 0.83,
+      "startMs": 51.141,
+      "track": "compute",
+      "description": "Expose the long-prefetched layer 0 expert flat buffer as grouped-GEMM weights at first backward use.",
+      "fixed": true
+    },
+    {
+      "id": "embedding-bwd-ag",
+      "label": "Backward prefetch: token embedding parameters",
+      "shortLabel": "Embedding BWD AG",
+      "type": "collective",
+      "durationMs": 0.207,
+      "startMs": 49.777,
+      "track": "fsdp-ag",
+      "description": "Prefetch embedding parameters for the final backward module.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dy-a2a",
+      "label": "Layer 0 dY all-to-all: token owners to expert owners",
+      "shortLabel": "L0 dY A2A",
+      "type": "collective",
+      "durationMs": 0.714,
+      "startMs": 51.975,
+      "track": "ep-a2a",
+      "description": "Send layer 0 expert-output gradients from token-owner ranks to expert-owner ranks.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-unpermute-bwd",
+      "label": "Layer 0 unpermute backward",
+      "shortLabel": "L0 Unpermute BWD",
+      "type": "routing",
+      "durationMs": 0.466,
+      "startMs": 52.691,
+      "track": "compute",
+      "description": "Recreate expert-major gradient layout.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-swiglu-bwd",
+      "label": "Layer 0 grouped-GEMM SwiGLU backward",
+      "shortLabel": "L0 SwiGLU BWD",
+      "type": "mlp",
+      "durationMs": 4.192,
+      "startMs": 53.157,
+      "track": "compute",
+      "description": "Layer 0 grouped gradI and gradW GEMMs.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-permute-bwd",
+      "label": "Layer 0 permute backward",
+      "shortLabel": "L0 Permute BWD",
+      "type": "routing",
+      "durationMs": 0.743,
+      "startMs": 57.349,
+      "track": "compute",
+      "description": "Undo dispatch-side permutation.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dx-a2a",
+      "label": "Layer 0 dX all-to-all: expert owners to token owners",
+      "shortLabel": "L0 dX A2A",
+      "type": "collective",
+      "durationMs": 0.679,
+      "startMs": 58.096,
+      "track": "ep-a2a",
+      "description": "Return layer 0 expert-input gradients from expert-owner ranks to token-owner ranks.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-expert-grad-pack",
+      "label": "Layer 0 expert flat-gradient pack",
+      "shortLabel": "L0 Expert Grad Pack",
+      "type": "routing",
+      "durationMs": 1.891,
+      "startMs": 58.971,
+      "track": "compute",
+      "description": "Pack expert gradients; reduce-scatter starts about 5 µs later.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-expert-rs",
+      "label": "Layer 0 expert-gradient reduce-scatter",
+      "shortLabel": "L0 Expert RS",
+      "type": "collective",
+      "durationMs": 5.28,
+      "startMs": 60.867,
+      "track": "fsdp-rs",
+      "description": "Shard layer 0 expert gradients while router and attention backward run."
+    },
+    {
+      "id": "layer0-route-bwd",
+      "label": "Layer 0 restore activation-gradient order",
+      "shortLabel": "L0 Restore BWD",
+      "type": "routing",
+      "durationMs": 0.659,
+      "startMs": 60.879,
+      "track": "compute",
+      "description": "Restore token-major activation gradients.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-router-bwd",
+      "label": "Layer 0 router backward",
+      "shortLabel": "L0 Router BWD",
+      "type": "routing",
+      "durationMs": 0.467,
+      "startMs": 61.539,
+      "track": "compute",
+      "description": "Backpropagate through layer 0 routing.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-attn-bwd",
+      "label": "Layer 0 attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "durationMs": 5.144,
+      "startMs": 62.014,
+      "track": "compute",
+      "description": "Layer 0 attention backward overlaps expert gradient sharding.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dense-grad-pack",
+      "label": "Layer 0 dense flat-gradient pack",
+      "shortLabel": "L0 Dense Grad Pack",
+      "type": "routing",
+      "durationMs": 0.235,
+      "startMs": 67.318,
+      "track": "compute",
+      "description": "Pack layer 0 dense gradients.",
+      "fixed": true
+    },
+    {
+      "id": "layer0-dense-rs",
+      "label": "Layer 0 dense-gradient reduce-scatter",
+      "shortLabel": "L0 Dense RS",
+      "type": "collective",
+      "durationMs": 0.759,
+      "startMs": 67.557,
+      "track": "fsdp-rs",
+      "description": "Shard layer 0 dense gradients."
+    },
+    {
+      "id": "embedding-bwd",
+      "label": "Token embedding backward",
+      "shortLabel": "Embedding BWD",
+      "type": "attention",
+      "durationMs": 0.283,
+      "startMs": 67.565,
+      "track": "compute",
+      "description": "Accumulate sparse token-embedding gradients while the layer 0 dense RS finishes.",
+      "fixed": true
+    },
+    {
+      "id": "embedding-rs",
+      "label": "Token-embedding gradient reduce-scatter",
+      "shortLabel": "Embedding RS",
+      "type": "collective",
+      "durationMs": 0.033,
+      "startMs": 68.339,
+      "track": "fsdp-rs",
+      "description": "Final collective in the captured forward-loss-backward scope.",
+      "fixed": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward-readiness",
+      "label": "Forward parameter and activation readiness",
+      "blockIds": [
+        "layer0-dense-ag",
+        "layer0-expert-ag",
+        "layer1-dense-ag",
+        "layer1-expert-ag-prefetch",
+        "layer0-dispatch",
+        "layer0-swiglu-fwd",
+        "layer0-combine"
+      ]
+    },
+    {
+      "id": "backward-readiness",
+      "label": "Backward parameter and activation readiness",
+      "blockIds": [
+        "layer1-bwd-dense-ag",
+        "layer1-expert-bwd-ag",
+        "layer0-bwd-dense-ag",
+        "layer0-expert-bwd-prefetch",
+        "layer1-dy-a2a",
+        "layer1-swiglu-bwd",
+        "layer1-dx-a2a"
+      ]
+    },
+    {
+      "id": "gradient-sharding",
+      "label": "FSDP gradient sharding",
+      "blockIds": [
+        "output-rs",
+        "layer1-expert-rs",
+        "layer1-dense-rs",
+        "layer0-expert-rs",
+        "layer0-dense-rs"
+      ]
+    }
+  ],
+  "timelineMode": "absolute",
+  "pxPerMs": 41,
+  "gridSegments": 14
+}

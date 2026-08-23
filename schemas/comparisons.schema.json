@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/build-your-trace/comparisons.schema.json",
+  "title": "Build Your Trace comparison labs",
+  "type": "object",
+  "required": ["comparisons"],
+  "properties": {
+    "comparisons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "order", "section", "title", "summary", "left", "right", "questions"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "order": { "type": "integer", "minimum": 1 },
+          "section": { "enum": ["Compare strategies", "Diagnose stalls", "Read multi-rank traces"] },
+          "prerequisites": { "type": "array", "items": { "type": "string" } },
+          "questions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": ["prompt", "side", "answerBlockId", "nudge", "explanation"],
+                  "properties": { "side": { "enum": ["left", "right"] } }
+                },
+                {
+                  "type": "object",
+                  "required": ["kind", "stage", "prompt", "options", "answerOptionId", "nudge", "explanation"],
+                  "properties": {
+                    "kind": { "const": "choice" },
+                    "stage": { "enum": ["Predict", "Explain"] },
+                    "options": {
+                      "type": "array",
+                      "minItems": 2,
+                      "items": {
+                        "type": "object",
+                        "required": ["id", "label"],
+                        "properties": {
+                          "id": { "type": "string", "minLength": 1 },
+                          "label": { "type": "string", "minLength": 1 }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

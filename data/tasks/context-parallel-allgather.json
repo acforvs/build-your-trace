@@ -1,0 +1,301 @@
+{
+  "id": "context-parallel-allgather",
+  "order": 14,
+  "section": "V · Context parallelism",
+  "category": "Context Parallel",
+  "resourceIds": [
+    "pytorch-cp-source",
+    "torchtitan",
+    "ultrascale"
+  ],
+  "title": "Ring CP: all-gather K/V rotation",
+  "difficulty": 4,
+  "topology": "CP=4 · 4×H100 NVLink",
+  "scope": "Measured Layer 0 slice · 16K-token train step",
+  "timelineMode": "absolute",
+  "totalMs": 65.195791,
+  "pxPerMs": 40,
+  "gridSegments": 13,
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan/PyTorch native CP · rank 0 CUDA streams",
+    "implementation": "TorchTitan Qwen3 model with PyTorch 2.9 native context_parallel, FlashAttention, CP=4, all-gather K/V rotation",
+    "workload": "Two dense Qwen-shaped layers, hidden 4096, 64 query heads, 4 KV heads, sequence 16384, BF16; displayed detail is Layer 0",
+    "measurement": "66.865 ms full CUDA-event step; 65.196 ms displayed semantic GPU window",
+    "timeline": "Exact rank-0 Nsight compute-stream and NCCL-stream timestamps; Layer 1 is explicit fixed context."
+  },
+  "description": [
+    "This is PyTorch's ring-attention algorithm using its all-gather rotation mode. Rank 0 computes attention against local K/V first. One NCCL all-gather materializes all four K/V shards, after which the remaining partial FlashAttention calls consume views of that gathered buffer.",
+    "Backward gathers K/V again, runs one partial FlashAttention backward per shard, and cyclically returns the accumulated dK/dV shard after every step. The dK/dV path always uses cyclic all-to-all, even when forward K/V uses all-gather.",
+    "The trace shows measured Layer 0 detail. The fixed ellipsis bands deliberately hide Layer 1 compute and communication so they provide context without revealing the Layer 0 solution. They are elapsed-work annotations, not idle gaps."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "comm",
+      "label": "CP K/V exchange",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "embedding-norm",
+      "label": "Fixed context: token embedding lookup and Layer 0 attention RMSNorm",
+      "shortLabel": "Embedding + RMSNorm",
+      "type": "attention",
+      "startMs": 0,
+      "durationMs": 0.698625,
+      "track": "compute",
+      "fixed": true,
+      "callout": true
+    },
+    {
+      "id": "qkv-fwd",
+      "label": "Fixed dependency: Layer 0 QKV projections, QK norms, and RoPE complete before CP communication",
+      "shortLabel": "QKV + QK norms + RoPE",
+      "type": "attention",
+      "startMs": 0.698625,
+      "durationMs": 1.50544,
+      "track": "compute",
+      "fixed": true,
+      "callout": true,
+      "description": "The K/V shard used by CP communication is produced here. No CP collective starts before this block finishes."
+    },
+    {
+      "id": "fwd-step-0",
+      "label": "L0 CP attention forward step 0: local K/V shard",
+      "shortLabel": "Fwd · local K/V",
+      "type": "attention",
+      "startMs": 2.204065,
+      "durationMs": 2.197856,
+      "track": "compute",
+      "callout": true,
+      "description": "Measured envelope containing the local FlashAttention kernel, online-softmax bookkeeping, and the exposed wait for the first gathered remote shard."
+    },
+    {
+      "id": "fwd-step-1",
+      "label": "L0 CP attention forward against K/V owned by rank 3",
+      "shortLabel": "Fwd · K/V owner r3",
+      "type": "attention",
+      "startMs": 4.401921,
+      "durationMs": 1.300225,
+      "track": "compute"
+    },
+    {
+      "id": "fwd-step-2",
+      "label": "L0 CP attention forward against K/V owned by rank 2",
+      "shortLabel": "Fwd · K/V owner r2",
+      "type": "attention",
+      "startMs": 5.702146,
+      "durationMs": 1.210272,
+      "track": "compute"
+    },
+    {
+      "id": "fwd-step-3",
+      "label": "L0 CP attention forward against K/V owned by rank 1",
+      "shortLabel": "Fwd · K/V owner r1",
+      "type": "attention",
+      "startMs": 6.912418,
+      "durationMs": 1.370144,
+      "track": "compute"
+    },
+    {
+      "id": "dense-fwd",
+      "label": "Fixed context: L0 attention output projection, residual, MLP RMSNorm, and SwiGLU forward",
+      "shortLabel": "O projection → L0 SwiGLU",
+      "type": "mlp",
+      "startMs": 8.282562,
+      "durationMs": 2.172737,
+      "track": "compute",
+      "fixed": true,
+      "callout": true
+    },
+    {
+      "id": "middle-ellipsis",
+      "label": "Fixed omitted context: Layer 1 forward, final norm, output head, loss, Layer 1 backward, and Layer 0 MLP/output-projection backward",
+      "shortLabel": "… L1 + loss + backward dense context …",
+      "type": "bubble",
+      "startMs": 10.455299,
+      "durationMs": 37.307464,
+      "track": "compute",
+      "fixed": true,
+      "description": "This is deliberately omitted busy compute, not a CPU bubble or idle GPU interval."
+    },
+    {
+      "id": "bwd-step-0",
+      "label": "L0 CP attention backward step 0: local K/V contribution",
+      "shortLabel": "Bwd · local K/V",
+      "type": "attention",
+      "startMs": 47.762763,
+      "durationMs": 3.774177,
+      "track": "compute"
+    },
+    {
+      "id": "bwd-step-1",
+      "label": "L0 CP attention backward for K/V owned by rank 3",
+      "shortLabel": "Bwd · K/V owner r3",
+      "type": "attention",
+      "startMs": 51.53694,
+      "durationMs": 3.339265,
+      "track": "compute"
+    },
+    {
+      "id": "bwd-step-2",
+      "label": "L0 CP attention backward for K/V owned by rank 2",
+      "shortLabel": "Bwd · K/V owner r2",
+      "type": "attention",
+      "startMs": 54.876205,
+      "durationMs": 3.269985,
+      "track": "compute"
+    },
+    {
+      "id": "bwd-step-3",
+      "label": "L0 CP attention backward for K/V owned by rank 1",
+      "shortLabel": "Bwd · K/V owner r1",
+      "type": "attention",
+      "startMs": 58.14619,
+      "durationMs": 5.885249,
+      "track": "compute",
+      "description": "Envelope includes partial FlashAttention backward, online accumulation, and the wait for the returning dK/dV shard."
+    },
+    {
+      "id": "context-out",
+      "label": "Fixed context: L0 QKV and RMSNorm gradients plus embedding weight gradient",
+      "shortLabel": "QKV grads → embedding grad",
+      "type": "attention",
+      "startMs": 64.031439,
+      "durationMs": 1.164352,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-kv-ag-fwd",
+      "label": "L0 forward K/V all-gather after local QKV is ready",
+      "shortLabel": "L0 fwd K/V AG",
+      "type": "collective",
+      "startMs": 2.962273,
+      "durationMs": 1.342272,
+      "track": "comm",
+      "callout": true,
+      "description": "QKV, QK normalization, and RoPE have already completed. This gathers one 8 MiB local BF16 K+V shard from every CP rank while rank 0 computes its local partial attention."
+    },
+    {
+      "id": "comm-ellipsis",
+      "label": "Fixed omission: Layer 1 CP communication is deliberately hidden",
+      "shortLabel": "… Layer 1 CP communication hidden …",
+      "type": "bubble",
+      "startMs": 10.455299,
+      "durationMs": 37.187688,
+      "track": "comm",
+      "fixed": true,
+      "description": "This annotation spans the omitted Layer 1 region; it does not claim continuous communication."
+    },
+    {
+      "id": "l0-kv-ag-bwd",
+      "label": "L0 backward K/V all-gather",
+      "shortLabel": "L0 bwd K/V AG",
+      "type": "collective",
+      "startMs": 47.642987,
+      "durationMs": 1.550785,
+      "track": "comm",
+      "callout": true,
+      "description": "Backward needs every K/V shard again to recompute each partial attention gradient."
+    },
+    {
+      "id": "l0-dkv-rotate-0",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 0",
+      "shortLabel": "dKV owner r0",
+      "type": "collective",
+      "startMs": 51.29518,
+      "durationMs": 1.315488,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-1",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 3",
+      "shortLabel": "dKV owner r3",
+      "type": "collective",
+      "startMs": 54.486029,
+      "durationMs": 1.622624,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-2",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 2",
+      "shortLabel": "dKV owner r2",
+      "type": "collective",
+      "startMs": 57.852493,
+      "durationMs": 1.706177,
+      "track": "comm",
+      "callout": true
+    },
+    {
+      "id": "l0-dkv-rotate-3",
+      "label": "Rotate accumulated dK/dV for K/V owner rank 1",
+      "shortLabel": "dKV owner r1",
+      "type": "collective",
+      "startMs": 61.129198,
+      "durationMs": 1.771777,
+      "track": "comm",
+      "callout": true
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "forward",
+      "label": "Forward partial attention",
+      "blockIds": [
+        "fwd-step-0",
+        "fwd-step-1",
+        "fwd-step-2",
+        "fwd-step-3"
+      ]
+    },
+    {
+      "id": "backward",
+      "label": "Backward partial attention",
+      "blockIds": [
+        "bwd-step-0",
+        "bwd-step-1",
+        "bwd-step-2",
+        "bwd-step-3"
+      ]
+    },
+    {
+      "id": "communication",
+      "label": "Layer 0 CP communication",
+      "blockIds": [
+        "l0-kv-ag-fwd",
+        "l0-kv-ag-bwd",
+        "l0-dkv-rotate-0",
+        "l0-dkv-rotate-1",
+        "l0-dkv-rotate-2",
+        "l0-dkv-rotate-3"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "attention",
+      "weight": 2.2
+    },
+    {
+      "type": "collective",
+      "weight": 1.3
+    },
+    {
+      "type": "attention",
+      "weight": 3.3
+    },
+    {
+      "type": "collective",
+      "weight": 1.7
+    }
+  ]
+}

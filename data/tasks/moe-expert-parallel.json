@@ -1,0 +1,176 @@
+{
+  "id": "moe-expert-parallel",
+  "order": 3,
+  "section": "I · Execution fundamentals",
+  "category": "Expert Parallel",
+  "resourceIds": [
+    "moe",
+    "torchtitan",
+    "ultrascale"
+  ],
+  "title": "MoE + expert parallelism",
+  "difficulty": 3,
+  "topology": "EP=4 · 4× H100 NVSwitch",
+  "scope": "One Qwen3-235B-A22B-shaped MoE forward · no attention · no FSDP",
+  "timelineMode": "absolute",
+  "totalMs": 8.035716,
+  "pxPerMs": 450,
+  "gridSegments": 12,
+  "verification": {
+    "status": "measured",
+    "label": "Measured TorchTitan EP=4 MoE forward",
+    "implementation": "TorchTitan v0.2.0 ExpertParallel with functional all-to-all and torch._grouped_mm SwiGLU",
+    "workload": "Hidden 4096, 128 experts, top-8, expert intermediate 1536, batch 1 per rank, sequence 4096, BF16 synthetic activations",
+    "measurement": "8.267 ms CUDA-event wall time; exact 8.036 ms rank-0 GPU kernel window shown",
+    "timeline": "Exact rank-0 kernel boundaries. The measured dynamic-split metadata wait is retained as fixed implementation context."
+  },
+  "description": [
+    "Start with the same local Qwen MoE path, but shard 128 experts across four GPUs. After source-side routing and permutation, dispatch sends token activations to expert-owning ranks; combine returns expert outputs to their source ranks before final weighted unpermutation.",
+    "Destination-local layout kernels are absorbed into the measured expert envelope rather than shown as conceptual stages. The visible sequence is exactly local MoE plus dispatch and combine communication.",
+    "TorchTitan v0.2.0 exchanges dynamic split counts and copies them to the CPU before dispatch. The measured wait is shown explicitly; it is not an inherent requirement of expert parallelism or a claim about every production EP implementation."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "ep-comm",
+      "label": "EP activation exchange",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "router",
+      "label": "Router GEMM",
+      "shortLabel": "Router",
+      "type": "routing",
+      "startMs": 0,
+      "durationMs": 0.092992,
+      "track": "compute",
+      "description": "Measured envelope from the router GEMM kernel to the first softmax/top-k kernel."
+    },
+    {
+      "id": "topk",
+      "label": "Softmax + top-k",
+      "shortLabel": "Top-8 routing",
+      "type": "routing",
+      "startMs": 0.092992,
+      "durationMs": 0.356769,
+      "track": "compute",
+      "description": "Select and normalize eight expert assignments for every source-rank token."
+    },
+    {
+      "id": "permute",
+      "label": "Permute tokens by destination expert",
+      "shortLabel": "Source permute",
+      "type": "routing",
+      "startMs": 0.449761,
+      "durationMs": 0.53264,
+      "track": "compute",
+      "description": "Sort and gather routed token copies into destination-rank and expert order before network dispatch."
+    },
+    {
+      "id": "metadata",
+      "label": "Fixed context: split-count exchange and host wait",
+      "shortLabel": "Split metadata + host wait",
+      "type": "bubble",
+      "startMs": 0.982401,
+      "durationMs": 0.742528,
+      "track": "ep-comm",
+      "fixed": true,
+      "description": "TorchTitan v0.2.0 exchanges per-expert counts, waits for them, and copies dynamic input/output split sizes to CPU. This measured synchronization is implementation-specific."
+    },
+    {
+      "id": "dispatch",
+      "label": "EP dispatch all-to-all",
+      "shortLabel": "Dispatch A2A",
+      "type": "collective",
+      "startMs": 1.724929,
+      "durationMs": 0.721889,
+      "track": "ep-comm",
+      "description": "Send each routed hidden vector to the rank that owns its selected expert."
+    },
+    {
+      "id": "experts",
+      "label": "Local grouped expert SwiGLU",
+      "shortLabel": "Local grouped SwiGLU",
+      "type": "mlp",
+      "startMs": 2.446818,
+      "durationMs": 3.266145,
+      "track": "compute",
+      "description": "Measured local-expert envelope: destination-local layout work, gate/up grouped GEMMs, SwiGLU activation, grouped down projection, and layout restoration for the 32 experts owned by this rank. Only the grouped expert computation is a portable conceptual stage."
+    },
+    {
+      "id": "combine",
+      "label": "EP combine all-to-all",
+      "shortLabel": "Combine A2A",
+      "type": "collective",
+      "startMs": 5.712963,
+      "durationMs": 0.64576,
+      "track": "ep-comm",
+      "description": "Return expert outputs from expert-owning ranks to the ranks that originated the tokens."
+    },
+    {
+      "id": "unpermute",
+      "label": "Unpermute + weighted combine",
+      "shortLabel": "Source unpermute + weights",
+      "type": "routing",
+      "startMs": 6.361315,
+      "durationMs": 1.674401,
+      "track": "compute",
+      "description": "Apply routing weights and scatter-add the eight returned expert contributions into original token order."
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "source-routing",
+      "label": "Source-rank routing",
+      "blockIds": [
+        "router",
+        "topk",
+        "permute",
+        "unpermute"
+      ]
+    },
+    {
+      "id": "ep-communication",
+      "label": "Expert-parallel communication",
+      "blockIds": [
+        "dispatch",
+        "combine"
+      ]
+    },
+    {
+      "id": "expert-compute",
+      "label": "Destination-rank experts",
+      "blockIds": [
+        "experts"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "routing",
+      "weight": 1
+    },
+    {
+      "type": "collective",
+      "weight": 0.8
+    },
+    {
+      "type": "mlp",
+      "weight": 2.1
+    },
+    {
+      "type": "collective",
+      "weight": 0.7
+    },
+    {
+      "type": "routing",
+      "weight": 1.7
+    }
+  ]
+}

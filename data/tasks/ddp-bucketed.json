@@ -1,0 +1,255 @@
+{
+  "id": "ddp-bucketed",
+  "order": 6,
+  "section": "II · Data parallelism",
+  "category": "Data Parallel",
+  "resourceIds": [
+    "pytorch-ddp",
+    "scaling-training",
+    "ultrascale"
+  ],
+  "title": "DDP buckets overlap backward",
+  "difficulty": 4,
+  "topology": "DDP=8 · 8×H100 · NVSwitch",
+  "scope": "2 dense Qwen-shaped layers · 9 measured reducer buckets",
+  "timelineMode": "absolute",
+  "totalMs": 28.203286,
+  "pxPerMs": 70,
+  "gridSegments": 12,
+  "verification": {
+    "status": "measured",
+    "label": "Measured bucketed PyTorch DDP · rank 0 compute and NCCL streams",
+    "implementation": "PyTorch 2.9.1 DistributedDataParallel with a 96 MiB bucket cap, gradient bucket views, and the default all-reduce hook",
+    "workload": "Same two dense Qwen-shaped layers and 893,428,736 BF16 gradient bytes as the terminal-bucket task; only reducer bucketization changes",
+    "measurement": "28.705 ms synchronized step; 28.203 ms displayed rank-0 GPU window; 0.926 ms exposed communication tail",
+    "timeline": "Clean Nsight timing correlated with a separate module-labeled capture; bucket composition comes directly from GradBucket.parameters()."
+  },
+  "description": [
+    "DDP rebuilds the reducer order from observed backward readiness. With a 96 MiB cap, this model forms nine buckets. A bucket launches only after every parameter it contains has a gradient; this is why one bucket can cross a layer boundary.",
+    "The early all-reduces overlap useful backward compute, but overlap is imperfect: concurrent NCCL increases the measured compute envelopes and collective durations through resource contention. Bucketization cuts the exposed tail from 4.00 ms to 0.93 ms, not to zero."
+  ],
+  "tracks": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "subtitle": "Rank 0 · CUDA stream 7"
+    },
+    {
+      "id": "ddp-comm",
+      "label": "DDP bucket all-reduce",
+      "subtitle": "Rank 0 · NCCL stream 23"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "forward-loss",
+      "label": "Fixed context: two-layer forward and cross-entropy",
+      "shortLabel": "Forward + loss",
+      "type": "bubble",
+      "startMs": 0,
+      "durationMs": 7.915037,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "root-backward",
+      "label": "Fixed context: output projection and final norm backward",
+      "shortLabel": "Output + norm BWD",
+      "type": "loss",
+      "startMs": 7.940701,
+      "durationMs": 0.135776,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l1-mlp-backward",
+      "label": "Fixed context: layer 1 SwiGLU backward and bucket preparation",
+      "shortLabel": "L1 SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 8.085373,
+      "durationMs": 4.617567,
+      "track": "compute",
+      "fixed": true,
+      "description": "Three layer 1 MLP-related buckets become ready while this backward envelope executes."
+    },
+    {
+      "id": "l1-attention-backward",
+      "label": "Fixed context: layer 1 attention backward",
+      "shortLabel": "L1 Attention BWD",
+      "type": "attention",
+      "startMs": 12.90278,
+      "durationMs": 4.43939,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-mlp-backward",
+      "label": "Fixed context: layer 0 SwiGLU backward and bucket preparation",
+      "shortLabel": "L0 SwiGLU BWD",
+      "type": "mlp",
+      "startMs": 17.49817,
+      "durationMs": 4.80051,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "l0-attention-backward",
+      "label": "Fixed context: layer 0 attention backward",
+      "shortLabel": "L0 Attention BWD",
+      "type": "attention",
+      "startMs": 22.456376,
+      "durationMs": 4.445567,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "embedding-backward",
+      "label": "Fixed context: embedding backward and final bucket preparation",
+      "shortLabel": "Embedding + final bucket",
+      "type": "bubble",
+      "startMs": 26.904535,
+      "durationMs": 0.37264,
+      "track": "compute",
+      "fixed": true
+    },
+    {
+      "id": "bucket-output-l1-down",
+      "label": "Output, final norm, and L1 down-projection gradient all-reduce",
+      "shortLabel": "Output + L1 down AR",
+      "type": "collective",
+      "startMs": 9.340733,
+      "durationMs": 2.465631,
+      "track": "ddp-comm",
+      "description": "Bucket 0 contains output.weight, norm.weight, and layers.1.feed_forward.w2.weight: 102,768,640 bytes. The earlier root gradients wait for the L1 down-projection gradient, which is the last member to become ready."
+    },
+    {
+      "id": "bucket-l1-up",
+      "label": "Layer 1 up-projection gradient all-reduce",
+      "shortLabel": "L1 up-proj AR",
+      "type": "collective",
+      "startMs": 11.808156,
+      "durationMs": 1.446271,
+      "track": "ddp-comm",
+      "description": "Bucket 1 contains only layers.1.feed_forward.w3.weight: 100,663,296 bytes."
+    },
+    {
+      "id": "bucket-l1-gate",
+      "label": "Layer 1 gate-projection gradient all-reduce",
+      "shortLabel": "L1 gate-proj AR",
+      "type": "collective",
+      "startMs": 13.256923,
+      "durationMs": 1.401184,
+      "track": "ddp-comm",
+      "description": "Bucket 2 contains only layers.1.feed_forward.w1.weight: 100,663,296 bytes."
+    },
+    {
+      "id": "bucket-l1-attention",
+      "label": "Layer 1 attention gradient all-reduce",
+      "shortLabel": "L1 attention AR",
+      "type": "collective",
+      "startMs": 17.394682,
+      "durationMs": 2.168735,
+      "track": "ddp-comm",
+      "description": "Bucket 3 contains L1 FFN norm plus Q, K, V, output-projection, and Q/K norm gradients: 142,615,040 bytes. It launches after L1 attention backward completes."
+    },
+    {
+      "id": "bucket-cross-layer",
+      "label": "L1 attention norm and L0 down-projection gradient all-reduce",
+      "shortLabel": "Cross-layer bucket AR",
+      "type": "collective",
+      "startMs": 19.720921,
+      "durationMs": 1.279008,
+      "track": "ddp-comm",
+      "description": "Bucket 4 crosses a layer boundary: layers.1.attention_norm.weight shares 100,671,488 bytes with layers.0.feed_forward.w2.weight. The ready L1 norm gradient waits until L0 down-projection backward supplies the bucket's final gradient."
+    },
+    {
+      "id": "bucket-l0-up",
+      "label": "Layer 0 up-projection gradient all-reduce",
+      "shortLabel": "L0 up-proj AR",
+      "type": "collective",
+      "startMs": 21.319993,
+      "durationMs": 1.092319,
+      "track": "ddp-comm",
+      "description": "Bucket 5 contains layers.0.feed_forward.w3.weight: 100,663,296 bytes."
+    },
+    {
+      "id": "bucket-l0-gate",
+      "label": "Layer 0 gate-projection gradient all-reduce",
+      "shortLabel": "L0 gate-proj AR",
+      "type": "collective",
+      "startMs": 22.413752,
+      "durationMs": 1.304672,
+      "track": "ddp-comm",
+      "description": "Bucket 6 contains layers.0.feed_forward.w1.weight: 100,663,296 bytes."
+    },
+    {
+      "id": "bucket-l0-attention",
+      "label": "Layer 0 attention gradient all-reduce",
+      "shortLabel": "L0 attention AR",
+      "type": "collective",
+      "startMs": 26.957207,
+      "durationMs": 1.178879,
+      "track": "ddp-comm",
+      "description": "Bucket 7 contains L0 FFN norm and attention projection/norm gradients: 142,615,040 bytes. Only 0.219 ms overlaps remaining compute, so most of this collective is exposed."
+    },
+    {
+      "id": "bucket-embedding",
+      "label": "Embedding and L0 attention-norm gradient all-reduce",
+      "shortLabel": "Embedding bucket AR",
+      "type": "collective",
+      "startMs": 28.13935,
+      "durationMs": 0.063936,
+      "track": "ddp-comm",
+      "description": "The final 2,105,344-byte bucket contains the token embedding and L0 attention norm. It closes the measured 0.926 ms communication tail."
+    }
+  ],
+  "paletteGroups": [
+    {
+      "id": "layer1",
+      "label": "Layer 1 ready buckets",
+      "blockIds": [
+        "bucket-output-l1-down",
+        "bucket-l1-up",
+        "bucket-l1-gate",
+        "bucket-l1-attention"
+      ]
+    },
+    {
+      "id": "layer0",
+      "label": "Layer 0 and final buckets",
+      "blockIds": [
+        "bucket-cross-layer",
+        "bucket-l0-up",
+        "bucket-l0-gate",
+        "bucket-l0-attention",
+        "bucket-embedding"
+      ]
+    }
+  ],
+  "preview": [
+    {
+      "type": "mlp",
+      "weight": 4.6
+    },
+    {
+      "type": "collective",
+      "weight": 2.5
+    },
+    {
+      "type": "attention",
+      "weight": 4.4
+    },
+    {
+      "type": "collective",
+      "weight": 2.2
+    },
+    {
+      "type": "mlp",
+      "weight": 4.8
+    },
+    {
+      "type": "collective",
+      "weight": 1.3
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "taskId": "fsdp-dense",
+  "variant": {
+    "id": "ib",
+    "label": "Modeled IB",
+    "default": true,
+    "taskOverrides": {
+      "topology": "FSDP=8 cross-node · NDR400 InfiniBand",
+      "scope": "2 dense Qwen-shaped layers · analytical cross-node FSDP",
+      "totalMs": 78.1,
+      "pxPerMs": 24,
+      "description": [
+        "This is the measured dense-FSDP task with only FSDP communication changed to cross-node NDR400 InfiniBand. Every attention, MLP, root, and embedding compute duration is unchanged.",
+        "Each GPU/rank is assigned one 400 Gb/s rail: 50 GB/s peak and 42.5 GB/s effective at 85% efficiency. Eight rails provide 400 GB/s aggregate node injection, not 400 GB/s to each rank.",
+        "Each compute block keeps its measured duration but moves right when its corresponding parameter all-gather is incomplete. Reduce-scatters remain serialized on the FSDP reduction stream."
+      ],
+      "insight": "Cross-node all-gathers stall L1 forward, L1 backward, and L0 backward. The two FP32 reduce-scatters dominate the tail."
+    },
+    "verification": {
+      "status": "modeled",
+      "label": "Analytical NDR400 model · 42.5 GB/s effective per rank",
+      "implementation": "Measured NVLink compute with byte-derived cross-node FSDP collectives and explicit dependency rescheduling",
+      "workload": "Same two dense Qwen-shaped layers; only FSDP AG/RS communication changes from NVLink to one NDR400 rail per rank.",
+      "measurement": "78.100 ms modeled window. Compute durations are unchanged; layer AG=9.204 ms and FP32 layer RS=18.358 ms."
+    },
+    "model": {
+      "peakGbpsPerRank": 400,
+      "peakGBsPerRank": 50,
+      "effectiveGBsPerRank": 42.5,
+      "railsPerNode": 8,
+      "aggregatePeakGBsPerNode": 400,
+      "latencyUsPerCollective": 50,
+      "formula": "time = total_bytes × (ranks - 1) / ranks / effective_bytes_per_second + latency",
+      "durationsMs": {
+        "layerAllGatherBf16": 9.2038,
+        "layerReduceScatterFp32": 18.357599,
+        "rootAllGatherBf16": 0.093345,
+        "rootReduceScatterFp32": 0.136691,
+        "embeddingAllGatherBf16": 0.093177,
+        "embeddingReduceScatterFp32": 0.136353
+      }
+    },
+    "blockOverrides": {
+      "l0-fwd-ag": {
+        "startMs": 0,
+        "durationMs": 9.2038,
+        "description": "Materialize the complete 424 MiB BF16 layer 0 parameter set from eight FSDP shards. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-fwd-ag": {
+        "startMs": 9.207288,
+        "durationMs": 9.2038,
+        "description": "Layer 0's pre-forward path launches layer 1 prefetch immediately after L0 AG releases the serialized FSDP stream; it overlaps L0 attention. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-attn-fwd": {
+        "startMs": 9.2158
+      },
+      "l0-mlp-fwd": {
+        "startMs": 12.182232
+      },
+      "root-fwd-ag": {
+        "startMs": 18.413088,
+        "durationMs": 0.093345,
+        "description": "The small shared final-norm/output FSDP state is prefetched while layer 0 MLP executes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-attn-fwd": {
+        "startMs": 18.423088,
+        "description": "Layer 1 parameter copy-out, input norm, GQA attention kernels, output projection, and residual. Compute is shifted until the corresponding L1 forward AG completes."
+      },
+      "l1-mlp-fwd": {
+        "startMs": 20.831056
+      },
+      "root-boundary": {
+        "startMs": 22.619856
+      },
+      "l1-bwd-ag": {
+        "startMs": 22.796208,
+        "durationMs": 9.2038,
+        "description": "The root output module prefetches layer 1 parameters for backward while output/loss backward executes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "root-rs": {
+        "startMs": 32.00244,
+        "durationMs": 0.136691,
+        "description": "Shard the root module gradients after its backward pass. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-mlp-bwd": {
+        "startMs": 32.01428
+      },
+      "l0-bwd-ag": {
+        "startMs": 33.444616,
+        "durationMs": 9.2038,
+        "description": "Layer 1 backward launches layer 0 parameter prefetch; it is fully hidden by L1 backward compute. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-attn-bwd": {
+        "startMs": 36.359144
+      },
+      "l0-mlp-bwd": {
+        "startMs": 42.660416,
+        "description": "Layer 0 parameter copy-out followed by dense SwiGLU and FFN-normalization backward. Compute is shifted until the corresponding L0 backward AG completes."
+      },
+      "l1-rs": {
+        "startMs": 41.226216,
+        "durationMs": 18.357599,
+        "description": "FP32 layer 1 gradient sharding begins about 5 µs after gradient packing and overlaps layer 0 MLP backward. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "embedding-bwd-ag": {
+        "startMs": 45.799552,
+        "durationMs": 0.093177,
+        "description": "Layer 0 backward prefetches the embedding state. The embedding itself is outside the two-layer puzzle. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-attn-bwd": {
+        "startMs": 47.165216
+      },
+      "l0-rs": {
+        "startMs": 59.583815,
+        "durationMs": 18.357599,
+        "description": "FP32 layer 0 gradient sharding begins about 6 µs after packing and forms the exposed communication tail. The gradient is ready earlier, but this RS waits for the serialized L1 RS."
+      },
+      "embedding-boundary": {
+        "startMs": 52.021984
+      },
+      "embedding-rs": {
+        "startMs": 77.963558,
+        "durationMs": 0.136353,
+        "description": "The final tiny embedding RS closes the captured backward window. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      }
+    }
+  }
+}
