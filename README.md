@@ -8,7 +8,11 @@ Build Your Trace is a static set of interactive exercises about execution order,
 
 **[Open the interactive lessons →](https://trace.vladsavinov.com/)**
 
-![Build Your Trace social preview](assets/social-card.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/preview-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/preview-light.png">
+  <img alt="Build Your Trace showing the two-layer FSDP over MoE challenge" src="assets/preview-light.png">
+</picture>
 
 ## Run locally
 
