@@ -1707,6 +1707,7 @@ document.addEventListener("keydown", (event) => {
 
 try {
   await loadData();
+  configureGithubLinks(document);
   renderMethod();
   route({ restoreScroll: true });
 } catch (error) {

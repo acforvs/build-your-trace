@@ -314,6 +314,7 @@ html[data-theme="dark"] .palette-tools .solution-button { border-color: #426f95;
 
 @media (max-width: 640px) {
   .workspace-topbar { align-items: flex-start; flex-direction: row; }
+  .header-actions { gap: 10px; font-size: 11px; }
   .workspace, .compact-trace .workspace { min-height: 0; grid-template-rows: auto auto auto auto; }
   .progress-pill { width: 112px; flex: 0 0 112px; }
   .timeline-toolbar { width: 100%; align-items: stretch; }
