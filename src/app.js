@@ -717,10 +717,33 @@ function createWidthZoomController({
   zoomOutButton.addEventListener("click", () => setWidth(currentWidth / 1.35));
   zoomInButton.addEventListener("click", () => setWidth(currentWidth * 1.35));
   const wheelHandlers = scrollElements.map((scroll, index) => {
+    let previousPinchDistance = null;
     const trackPointer = (event) => {
       const rect = scroll.getBoundingClientRect();
       pointerPositions.set(scroll, Math.max(0, Math.min(scroll.clientWidth, event.clientX - rect.left)));
     };
+    const touchStart = (event) => {
+      if (event.touches.length !== 2) return;
+      const [first, second] = event.touches;
+      previousPinchDistance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+    };
+    const touchMove = (event) => {
+      if (event.touches.length !== 2) return;
+      event.preventDefault();
+      const [first, second] = event.touches;
+      const distance = Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+      if (!previousPinchDistance || !distance) {
+        previousPinchDistance = distance;
+        return;
+      }
+      const rect = scroll.getBoundingClientRect();
+      const midpoint = (first.clientX + second.clientX) / 2 - rect.left;
+      const pointer = Math.max(0, Math.min(scroll.clientWidth, midpoint));
+      const anchorPixels = scrollElements.map((item, itemIndex) => itemIndex === index ? pointer : item.clientWidth / 2);
+      zoomBy(Math.max(.86, Math.min(1.16, distance / previousPinchDistance)), anchorPixels);
+      previousPinchDistance = distance;
+    };
+    const touchEnd = (event) => { if (event.touches.length < 2) previousPinchDistance = null; };
     const handler = (event) => {
       if (!event.ctrlKey && !event.altKey) return;
       event.preventDefault();
@@ -731,15 +754,23 @@ function createWidthZoomController({
       zoomBy(Math.max(.88, Math.min(1.14, Math.exp(-event.deltaY * .004))), anchorPixels);
     };
     scroll.addEventListener("pointermove", trackPointer, { passive: true, capture: true });
+    scroll.addEventListener("touchstart", touchStart, { passive: true, capture: true });
+    scroll.addEventListener("touchmove", touchMove, { passive: false, capture: true });
+    scroll.addEventListener("touchend", touchEnd, { passive: true, capture: true });
+    scroll.addEventListener("touchcancel", touchEnd, { passive: true, capture: true });
     scroll.addEventListener("wheel", handler, { passive: false, capture: true });
     observer.observe(scroll);
-    return { scroll, handler, trackPointer };
+    return { scroll, handler, trackPointer, touchStart, touchMove, touchEnd };
   });
   requestAnimationFrame(fit);
   return { fit, setWidth, zoomBy, destroy: () => {
     observer.disconnect();
-    wheelHandlers.forEach(({ scroll, handler, trackPointer }) => {
+    wheelHandlers.forEach(({ scroll, handler, trackPointer, touchStart, touchMove, touchEnd }) => {
       scroll.removeEventListener("pointermove", trackPointer, { capture: true });
+      scroll.removeEventListener("touchstart", touchStart, { capture: true });
+      scroll.removeEventListener("touchmove", touchMove, { capture: true });
+      scroll.removeEventListener("touchend", touchEnd, { capture: true });
+      scroll.removeEventListener("touchcancel", touchEnd, { capture: true });
       scroll.removeEventListener("wheel", handler, { capture: true });
     });
   } };
