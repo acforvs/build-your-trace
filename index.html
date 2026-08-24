@@ -236,18 +236,11 @@
               <strong data-result-label></strong>
               <p class="status-message" data-status aria-live="polite"></p>
             </div>
-            <section class="completion-debrief" data-completion-debrief hidden>
-              <div class="debrief-heading"><span data-debrief-kicker>Completion debrief</span><strong>Why this schedule</strong></div>
-              <div class="debrief-content">
-                <div class="debrief-steps" data-debrief-steps role="tablist" aria-label="Trace dependencies"></div>
-                <p data-debrief-explanation></p>
-              </div>
-            </section>
             <div class="timeline-toolbar">
               <div class="timeline-toolbar-controls">
                 <div class="variant-picker" data-variant-picker aria-label="Trace topology"></div>
                 <div class="timeline-view-tools">
-                  <div class="timeline-zoom" aria-label="Timeline zoom">
+                  <div class="timeline-zoom" aria-label="Timeline zoom" title="Pinch on a trackpad or Alt-scroll to zoom around the pointer">
                     <button type="button" data-zoom-fit>Fit</button><button type="button" data-zoom-out aria-label="Zoom out">−</button><span data-zoom-level>100%</span><button type="button" data-zoom-in aria-label="Zoom in">+</button>
                   </div>
                   <button class="focus-button" type="button" data-focus-mode aria-pressed="false"><span class="focus-icon" aria-hidden="true"></span><span data-focus-label>Focus</span></button>
@@ -255,15 +248,29 @@
               </div>
               <div class="timeline-toolbar-key">
                 <div class="legend" data-legend></div>
-                <div class="scale-label">Width ∝ duration · <span data-timing-source></span></div>
+                <div class="scale-label">Width ∝ duration · <span data-timing-source></span> · pinch or Alt-scroll to zoom</div>
               </div>
             </div>
-            <div class="timeline-scroll">
-              <div class="timeline" data-timeline></div>
+            <div class="timeline-stage">
+              <div class="timeline-scroll">
+                <div class="timeline" data-timeline></div>
+              </div>
+              <aside class="completion-debrief" data-completion-debrief hidden aria-label="Dependency walkthrough">
+                <div class="debrief-heading"><span data-debrief-kicker>Completion debrief</span><strong>Dependency walkthrough</strong><small data-debrief-count></small></div>
+                <p class="debrief-intro">Inspect one prerequisite and the operation it releases.</p>
+                <div class="debrief-steps" data-debrief-steps role="tablist" aria-label="Trace dependencies"></div>
+                <div class="debrief-pair" aria-live="polite">
+                  <div><span><b>1</b> Prerequisite</span><strong data-debrief-from></strong></div>
+                  <i aria-hidden="true">releases ↓</i>
+                  <div><span><b>2</b> Consumer</span><strong data-debrief-to></strong></div>
+                </div>
+                <p class="debrief-explanation"><strong data-debrief-relation></strong><span data-debrief-explanation></span></p>
+                <div class="debrief-actions"><button type="button" data-debrief-previous>← Previous</button><button type="button" data-debrief-next>Next →</button></div>
+              </aside>
             </div>
           </div>
           <div class="palette-shell">
-            <div class="palette-heading"><div><p class="eyebrow">Event palette</p><h3>Drag or tap a block, then choose a slot</h3></div><div class="palette-tools"><button class="text-button solution-button" type="button" data-show-final>Reveal solution</button><button class="text-button" type="button" data-reset>Reset</button></div></div>
+            <div class="palette-heading"><div><p class="eyebrow">Event palette</p><h3>Drag or tap a block, then choose a slot</h3><small data-palette-help>Categories filter the remaining events; they do not prescribe execution order.</small></div><div class="palette-tools"><button class="text-button solution-button" type="button" data-show-final>Reveal solution</button><button class="text-button" type="button" data-reset>Reset</button></div></div>
             <div class="palette-groups" data-palette-groups aria-label="Event groups"></div>
             <div class="palette" data-palette></div>
           </div>

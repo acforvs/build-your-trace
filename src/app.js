@@ -12,7 +12,7 @@ const scrollPositionKey = "build-your-trace:scroll-positions:v1";
 const themeKey = "build-your-trace:theme:v1";
 const placementKey = "build-your-trace:placements:v1";
 const taskTimelineLabelWidth = 128;
-const state = { tasks: [], comparisons: [], collectives: [], assumptions: {}, resources: {}, social: {}, activeBlock: null, placements: new Map(), completed: new Set(), comparisonsCompleted: new Set(), collectivesCompleted: new Set(), solutionRevealed: false, preRevealPlacements: null, activeTask: null, timelineZoom: 1, timelineNaturalWidth: 0, timelineAtFit: false, timelineZoomController: null, comparisonZoomControllers: [], focusedComparisonSide: null, suppressPlacementSave: false, activeDebriefIndex: 0, debriefObserver: null };
+const state = { tasks: [], comparisons: [], collectives: [], assumptions: {}, resources: {}, social: {}, activeBlock: null, placements: new Map(), completed: new Set(), comparisonsCompleted: new Set(), collectivesCompleted: new Set(), solutionRevealed: false, preRevealPlacements: null, activeTask: null, timelineZoom: 1, timelineNaturalWidth: 0, timelineAtFit: false, timelineZoomController: null, comparisonZoomControllers: [], focusedComparisonSide: null, suppressPlacementSave: false, activeDebriefIndex: 0, cancelInteraction: null };
 let activeRouteKey = null;
 let scrollTrackingReady = false;
 let pendingChallengeScroll = false;
@@ -437,6 +437,13 @@ function renderGame(sourceTask, variantId) {
   state.placements = new Map();
   state.solutionRevealed = false;
   state.preRevealPlacements = null;
+  state.cancelInteraction = () => {
+    if (!state.activeBlock) return false;
+    state.activeBlock = null;
+    app.querySelectorAll("[data-block]").forEach((button) => button.classList.remove("selected"));
+    app.querySelectorAll("[data-slot]").forEach((slot) => slot.classList.remove("selectable"));
+    return true;
+  };
   const fragment = document.querySelector("#game-template").content.cloneNode(true);
   const gamePage = fragment.querySelector(".game-page");
   gamePage.dataset.taskFamily = cardFamily(task.catalogTags || [task.category]);
@@ -613,6 +620,16 @@ function buildAbsoluteTimeline(task) {
       slot.style.width = `${block.durationMs / task.totalMs * 100}%`;
       slot.dataset.slot = block.id;
       slot.dataset.absolute = "true";
+      const callout = getCalloutPresentation(task, block);
+      const microTarget = block.durationMs * pxPerMs < 44;
+      if (microTarget) {
+        const hitOffsets = [-36, -18, 18, 36];
+        slot.dataset.microTarget = "true";
+        slot.dataset.hitLane = String(callout?.lane || 0);
+        const hitOffset = hitOffsets[callout?.lane || 0];
+        slot.classList.add("micro-target");
+        slot.style.setProperty("--hit-offset", `${hitOffset}px`);
+      }
       slot.dataset.emptyLabel = `Empty target on ${track.label}`;
       slot.setAttribute("aria-label", slot.dataset.emptyLabel);
       slot.innerHTML = "<span>drop</span>";
@@ -632,14 +649,15 @@ function createWidthZoomController({
   zoomOutButton,
   zoomInButton,
   levelElement,
-  maxScale = 2,
+  maxScale = 16,
   onChange = () => {},
 }) {
   let currentWidth = naturalWidth;
   let atFit = false;
+  const pointerPositions = new Map();
   const observer = new ResizeObserver(() => { if (atFit) fit(); });
 
-  function setWidth(width, { fit: fitting = false, centerRatio = null } = {}) {
+  function setWidth(width, { fit: fitting = false, centerRatio = null, anchorPoints = null } = {}) {
     const fitWidth = getFitWidth();
     const nextWidth = Math.max(fitWidth, Math.min(naturalWidth * maxScale, Math.round(width)));
     const ratios = scrollElements.map((scroll) => centerRatio ?? ((scroll.scrollLeft + scroll.clientWidth / 2) / Math.max(1, scroll.scrollWidth)));
@@ -651,9 +669,27 @@ function createWidthZoomController({
     zoomOutButton.disabled = nextWidth <= fitWidth + 2;
     zoomInButton.disabled = nextWidth >= naturalWidth * maxScale - 2;
     onChange({ scale, atFit });
-    requestAnimationFrame(() => scrollElements.forEach((scroll, index) => {
+    scrollElements.forEach((scroll, index) => {
+      const anchorPoint = anchorPoints?.[index];
+      if (anchorPoint) {
+        // Reading scrollWidth after applyWidth forces current layout geometry,
+        // preventing rapid pinch events from anchoring against a stale width.
+        const fixedWidth = Math.max(0, scroll.scrollWidth - currentWidth);
+        scroll.scrollLeft = Math.max(0, fixedWidth + anchorPoint.ratio * currentWidth - anchorPoint.pixel);
+        return;
+      }
       scroll.scrollLeft = Math.max(0, ratios[index] * scroll.scrollWidth - scroll.clientWidth / 2);
-    }));
+    });
+  }
+
+  function zoomBy(factor, anchorPixels = null) {
+    const anchorPoints = scrollElements.map((scroll, index) => {
+      const pixel = anchorPixels?.[index] ?? scroll.clientWidth / 2;
+      const fixedWidth = Math.max(0, scroll.scrollWidth - currentWidth);
+      const ratio = Math.max(0, Math.min(1, (scroll.scrollLeft + pixel - fixedWidth) / Math.max(1, currentWidth)));
+      return { pixel, ratio };
+    });
+    setWidth(currentWidth * factor, { anchorPoints });
   }
 
   function fit() {
@@ -663,9 +699,33 @@ function createWidthZoomController({
   fitButton.addEventListener("click", fit);
   zoomOutButton.addEventListener("click", () => setWidth(currentWidth / 1.35));
   zoomInButton.addEventListener("click", () => setWidth(currentWidth * 1.35));
-  scrollElements.forEach((scroll) => observer.observe(scroll));
+  const wheelHandlers = scrollElements.map((scroll, index) => {
+    const trackPointer = (event) => {
+      const rect = scroll.getBoundingClientRect();
+      pointerPositions.set(scroll, Math.max(0, Math.min(scroll.clientWidth, event.clientX - rect.left)));
+    };
+    const handler = (event) => {
+      if (!event.ctrlKey && !event.altKey) return;
+      event.preventDefault();
+      const rect = scroll.getBoundingClientRect();
+      const eventPointer = Math.max(0, Math.min(scroll.clientWidth, event.clientX - rect.left));
+      const pointer = event.ctrlKey ? (pointerPositions.get(scroll) ?? eventPointer) : eventPointer;
+      const anchorPixels = scrollElements.map((item, itemIndex) => itemIndex === index ? pointer : item.clientWidth / 2);
+      zoomBy(Math.max(.88, Math.min(1.14, Math.exp(-event.deltaY * .004))), anchorPixels);
+    };
+    scroll.addEventListener("pointermove", trackPointer, { passive: true, capture: true });
+    scroll.addEventListener("wheel", handler, { passive: false, capture: true });
+    observer.observe(scroll);
+    return { scroll, handler, trackPointer };
+  });
   requestAnimationFrame(fit);
-  return { fit, setWidth, destroy: () => observer.disconnect() };
+  return { fit, setWidth, zoomBy, destroy: () => {
+    observer.disconnect();
+    wheelHandlers.forEach(({ scroll, handler, trackPointer }) => {
+      scroll.removeEventListener("pointermove", trackPointer, { capture: true });
+      scroll.removeEventListener("wheel", handler, { capture: true });
+    });
+  } };
 }
 
 function focusTimelineBlocks(task, blockIds) {
@@ -685,6 +745,7 @@ function focusTimelineBlocks(task, blockIds) {
 
 function bindTimelineZoom() {
   state.timelineZoomController?.destroy();
+  const task = state.activeTask;
   const scroll = app.querySelector(".timeline-scroll");
   const timeline = app.querySelector("[data-timeline]");
   state.timelineZoomController = createWidthZoomController({
@@ -694,6 +755,11 @@ function bindTimelineZoom() {
     applyWidth: (width, scale) => {
       timeline.style.setProperty("--timeline-width", `${width}px`);
       timeline.classList.toggle("compact-zoom", scale < .62);
+      timeline.querySelectorAll(".callout-slot").forEach((slot) => {
+        const block = task?.blocks.find((item) => item.id === slot.dataset.slot);
+        const renderedWidth = block && task.totalMs ? block.durationMs / task.totalMs * width : 0;
+        slot.classList.toggle("callout-readable", renderedWidth >= 62);
+      });
     },
     fitButton: app.querySelector("[data-zoom-fit]"),
     zoomOutButton: app.querySelector("[data-zoom-out]"),
@@ -702,7 +768,6 @@ function bindTimelineZoom() {
     onChange: ({ scale, atFit }) => {
       state.timelineZoom = scale;
       state.timelineAtFit = atFit;
-      requestAnimationFrame(drawActiveDebriefArrow);
     },
   });
 }
@@ -723,66 +788,12 @@ function debriefBlockElement(blockId) {
   return slot?.querySelector(".placed-block") || slot;
 }
 
-function anchorX(rect, anchor) {
-  if (anchor === "start") return rect.left;
-  if (anchor === "center") return rect.left + rect.width / 2;
-  return rect.right;
-}
-
-function drawActiveDebriefArrow() {
-  const task = state.activeTask;
-  const timeline = app.querySelector("[data-timeline]");
-  if (!task || !timeline || app.querySelector("[data-completion-debrief]")?.hidden) return;
-  const dependency = debriefDependencies(task)[state.activeDebriefIndex];
-  const source = dependency && debriefBlockElement(dependency.fromBlockId);
-  const target = dependency && debriefBlockElement(dependency.toBlockId);
-  if (!dependency || !source || !target) return;
-
-  timeline.querySelector(".debrief-overlay")?.remove();
-  timeline.querySelectorAll(".debrief-source, .debrief-target").forEach((element) => element.classList.remove("debrief-source", "debrief-target"));
-  timeline.classList.add("debrief-active");
-  source.classList.add("debrief-source");
-  target.classList.add("debrief-target");
-
-  const timelineRect = timeline.getBoundingClientRect();
-  const sourceRect = source.getBoundingClientRect();
-  const targetRect = target.getBoundingClientRect();
-  let startX = anchorX(sourceRect, dependency.fromAnchor || "end") - timelineRect.left;
-  let endX = anchorX(targetRect, dependency.toAnchor || "start") - timelineRect.left;
-  const startY = sourceRect.top + sourceRect.height / 2 - timelineRect.top;
-  const endY = targetRect.top + targetRect.height / 2 - timelineRect.top;
-  const width = timeline.scrollWidth;
-  const height = timeline.scrollHeight;
-  const horizontalDistance = endX - startX;
-  let path;
-  if (Math.abs(startY - endY) < 8 && Math.abs(horizontalDistance) < 36) {
-    startX = sourceRect.right - Math.min(12, sourceRect.width / 2) - timelineRect.left;
-    endX = targetRect.left + Math.min(12, targetRect.width / 2) - timelineRect.left;
-    const arcY = Math.max(12, Math.min(sourceRect.top, targetRect.top) - timelineRect.top - 28);
-    path = `M ${startX} ${startY} C ${startX} ${arcY}, ${endX} ${arcY}, ${endX} ${endY}`;
-  } else {
-    const bend = Math.max(28, Math.min(110, Math.abs(horizontalDistance) * .38));
-    const direction = horizontalDistance >= 0 ? 1 : -1;
-    path = `M ${startX} ${startY} C ${startX + bend * direction} ${startY}, ${endX - bend * direction} ${endY}, ${endX} ${endY}`;
-  }
-
-  const overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  overlay.classList.add("debrief-overlay");
-  overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = `<defs><marker id="debrief-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z"></path></marker></defs><circle cx="${startX}" cy="${startY}" r="4"></circle><path class="debrief-path" d="${path}" marker-end="url(#debrief-arrowhead)"></path>`;
-  timeline.append(overlay);
-}
-
 function hideCompletionDebrief() {
-  state.debriefObserver?.disconnect();
-  state.debriefObserver = null;
   const panel = app.querySelector("[data-completion-debrief]");
   if (panel) panel.hidden = true;
   app.querySelector(".timeline-shell")?.classList.remove("has-debrief");
   const timeline = app.querySelector("[data-timeline]");
   timeline?.classList.remove("debrief-active");
-  timeline?.querySelector(".debrief-overlay")?.remove();
   timeline?.querySelectorAll(".debrief-source, .debrief-target").forEach((element) => element.classList.remove("debrief-source", "debrief-target"));
 }
 
@@ -796,9 +807,21 @@ function selectDebriefDependency(task, index) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
   });
-  app.querySelector("[data-debrief-explanation]").innerHTML = `<strong>${escapeHtml(dependency.label)}</strong><span>${escapeHtml(dependency.explanation)}</span>`;
+  const fromBlock = task.blocks.find((block) => block.id === dependency.fromBlockId);
+  const toBlock = task.blocks.find((block) => block.id === dependency.toBlockId);
+  app.querySelector("[data-debrief-count]").textContent = `${index + 1} / ${dependencies.length}`;
+  app.querySelector("[data-debrief-from]").textContent = fromBlock?.label || dependency.fromBlockId;
+  app.querySelector("[data-debrief-to]").textContent = toBlock?.label || dependency.toBlockId;
+  app.querySelector("[data-debrief-relation]").textContent = dependency.label;
+  app.querySelector("[data-debrief-explanation]").textContent = dependency.explanation;
+  app.querySelector("[data-debrief-previous]").disabled = index === 0;
+  app.querySelector("[data-debrief-next]").disabled = index === dependencies.length - 1;
+  const timeline = app.querySelector("[data-timeline]");
+  timeline?.querySelectorAll(".debrief-source, .debrief-target").forEach((element) => element.classList.remove("debrief-source", "debrief-target"));
+  timeline?.classList.add("debrief-active");
+  debriefBlockElement(dependency.fromBlockId)?.classList.add("debrief-source");
+  debriefBlockElement(dependency.toBlockId)?.classList.add("debrief-target");
   focusTimelineBlocks(task, [dependency.fromBlockId, dependency.toBlockId]);
-  requestAnimationFrame(() => requestAnimationFrame(drawActiveDebriefArrow));
 }
 
 function showCompletionDebrief(task, { preview = false } = {}) {
@@ -811,9 +834,8 @@ function showCompletionDebrief(task, { preview = false } = {}) {
   const steps = panel.querySelector("[data-debrief-steps]");
   steps.innerHTML = dependencies.map((dependency, index) => `<button type="button" role="tab" data-debrief-step="${index}"><span>${String(index + 1).padStart(2, "0")}</span>${escapeHtml(dependency.label)}</button>`).join("");
   steps.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => selectDebriefDependency(task, Number(button.dataset.debriefStep))));
-  state.debriefObserver?.disconnect();
-  state.debriefObserver = new ResizeObserver(() => requestAnimationFrame(drawActiveDebriefArrow));
-  state.debriefObserver.observe(app.querySelector("[data-timeline]"));
+  panel.querySelector("[data-debrief-previous]").onclick = () => selectDebriefDependency(task, state.activeDebriefIndex - 1);
+  panel.querySelector("[data-debrief-next]").onclick = () => selectDebriefDependency(task, state.activeDebriefIndex + 1);
   if (!preview) applySolvedActions(task);
   selectDebriefDependency(task, 0);
 }
@@ -841,6 +863,7 @@ function buildPalette(task) {
   groupNav.hidden = groups.length === 1;
 
   const activateGroup = (groupId) => {
+    state.cancelInteraction?.();
     groupNav.querySelectorAll("button").forEach((button) => {
       const active = button.dataset.paletteGroup === groupId;
       button.classList.toggle("active", active);
@@ -987,7 +1010,7 @@ function clearSlot(slotId) {
   delete slot.dataset.occupied;
   slot.setAttribute("aria-label", slot.dataset.emptyLabel || "Empty target");
   slot.removeAttribute("title");
-  slot.className = `trace-slot${slot.dataset.absolute ? " absolute-slot" : ""}`;
+  slot.className = `trace-slot${slot.dataset.absolute ? " absolute-slot" : ""}${slot.dataset.microTarget ? " micro-target" : ""}`;
   slot.innerHTML = "<span>drop</span>";
 }
 
@@ -1254,7 +1277,7 @@ function bindComparisonViewport() {
       zoomOutButton: panel.querySelector("[data-panel-zoom-out]"),
       zoomInButton: panel.querySelector("[data-panel-zoom-in]"),
       levelElement: panel.querySelector("[data-panel-zoom-level]"),
-      maxScale: 3,
+      maxScale: 10,
     });
     panel.querySelector("[data-panel-focus]").addEventListener("click", () => {
       const active = document.body.classList.contains("comparison-focus") && panel.classList.contains("is-focused");
@@ -1310,7 +1333,10 @@ function renderComparison(comparison) {
     const choiceQuestion = question.kind === "choice";
     app.querySelectorAll(".comparison-trace-block").forEach((block) => {
       block.classList.remove("selected", "correct", "incorrect");
-      block.disabled = choiceQuestion || block.dataset.comparisonSide !== question.side;
+      const answerable = !choiceQuestion && block.dataset.comparisonSide === question.side;
+      block.dataset.answerable = String(answerable);
+      block.setAttribute("aria-disabled", String(!answerable));
+      block.classList.toggle("not-answerable", !answerable);
     });
     app.querySelectorAll(".comparison-trace-panel").forEach((panel) => panel.classList.toggle("question-target", !choiceQuestion && panel.dataset.traceSide === question.side));
     questionPanel.querySelector("[data-question-count]").textContent = `${question.stage || (choiceQuestion ? "Explain" : "Inspect")} · question ${questionIndex + 1} of ${comparison.questions.length}`;
@@ -1338,7 +1364,7 @@ function renderComparison(comparison) {
 
   app.querySelectorAll(".comparison-trace-block").forEach((block) => {
     block.addEventListener("click", () => {
-      if (block.disabled || comparison.questions[questionIndex].kind === "choice") return;
+      if (block.dataset.answerable !== "true" || comparison.questions[questionIndex].kind === "choice") return;
       app.querySelectorAll(".comparison-trace-block").forEach((item) => item.classList.remove("selected", "incorrect"));
       block.classList.add("selected");
       selectedBlockId = block.dataset.comparisonBlock;
@@ -1384,6 +1410,16 @@ function renderComparison(comparison) {
     showQuestion();
     if (matchMedia("(max-width: 760px)").matches) questionPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+  state.cancelInteraction = () => {
+    if (!selectedBlockId && !selectedOptionId) return false;
+    selectedBlockId = null;
+    selectedOptionId = null;
+    app.querySelectorAll(".comparison-trace-block, [data-question-option]").forEach((item) => item.classList.remove("selected", "incorrect"));
+    feedback.className = "question-feedback";
+    feedback.textContent = "Selection cleared.";
+    checkButton.disabled = true;
+    return true;
+  };
   showQuestion();
 }
 
@@ -1444,6 +1480,13 @@ function renderCollectiveLesson(lesson) {
   const allowsReplication = lesson.operation === "all_gather" || lesson.operation === "all_reduce";
   const totalSlots = lesson.outputRanks.flat().length;
   let activeChunkId = null;
+  const selectionFeedback = () => {
+    const feedback = app.querySelector("[data-collective-feedback]");
+    if (!feedback || feedback.classList.contains("error") || feedback.classList.contains("success")) return;
+    feedback.textContent = activeChunkId && allowsReplication
+      ? `${lesson.resultChunks[activeChunkId].label} selected — place every copy; it stays selected.`
+      : "";
+  };
 
   const save = () => {
     const store = readCollectivePlacements();
@@ -1466,9 +1509,12 @@ function renderCollectiveLesson(lesson) {
     });
     app.querySelector("[data-collective-progress]").textContent = `${placements.size}/${totalSlots} placed`;
     app.querySelector("[data-collective-check]").disabled = placements.size === 0;
+    selectionFeedback();
   };
 
   const selectChunk = (chunkId) => {
+    const feedback = app.querySelector("[data-collective-feedback]");
+    feedback.className = "collective-feedback";
     activeChunkId = activeChunkId === chunkId ? null : chunkId;
     draw();
   };
@@ -1549,6 +1595,16 @@ function renderCollectiveLesson(lesson) {
     app.querySelector("[data-collective-next]").hidden = false;
   });
 
+  state.cancelInteraction = () => {
+    if (!activeChunkId) return false;
+    activeChunkId = null;
+    const feedback = app.querySelector("[data-collective-feedback]");
+    feedback.className = "collective-feedback";
+    feedback.textContent = "Selection cleared.";
+    draw();
+    return true;
+  };
+
   draw();
 }
 
@@ -1558,6 +1614,7 @@ function currentTask() {
 
 function route({ restoreScroll = false } = {}) {
   saveScrollPosition();
+  state.cancelInteraction = null;
   const nextRouteKey = routeKey();
   scrollTrackingReady = false;
   const collectiveMatch = location.hash.match(/^#\/collective\/([^/]+)$/);
@@ -1627,10 +1684,25 @@ document.addEventListener("fullscreenchange", () => {
   requestAnimationFrame(() => state.comparisonZoomControllers.forEach(({ controller }) => controller.fit()));
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && document.body.classList.contains("trace-focus")) {
+  const debrief = app.querySelector("[data-completion-debrief]:not([hidden])");
+  if (debrief && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    const dependencies = state.activeTask ? debriefDependencies(state.activeTask) : [];
+    const direction = event.key === "ArrowLeft" ? -1 : 1;
+    const nextIndex = Math.max(0, Math.min(dependencies.length - 1, state.activeDebriefIndex + direction));
+    if (nextIndex !== state.activeDebriefIndex) selectDebriefDependency(state.activeTask, nextIndex);
+    event.preventDefault();
+    return;
+  }
+  if (event.key !== "Escape") return;
+  traceTooltip.hidden = true;
+  if (state.cancelInteraction?.()) {
+    event.preventDefault();
+    return;
+  }
+  if (document.body.classList.contains("trace-focus")) {
     void setTraceFocus(false);
   }
-  if (event.key === "Escape" && document.body.classList.contains("comparison-focus")) setComparisonFocus(app.querySelector(".comparison-trace-panel.is-focused"), false);
+  if (document.body.classList.contains("comparison-focus")) setComparisonFocus(app.querySelector(".comparison-trace-panel.is-focused"), false);
 });
 
 try {

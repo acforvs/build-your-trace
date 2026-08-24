@@ -5,10 +5,10 @@
       "order": 1,
       "title": "AllGather",
       "summary": "Replicate every rank-owned shard on every rank.",
-      "instruction": "Fill each destination tensor with A, B, C, D in source-rank order.",
+      "instruction": "Fill each destination tensor with A, B, C in source-rank order. Select a chunk once; it stays selected while you place every copy.",
       "operation": "all_gather",
       "difficulty": 1,
-      "ranks": 4,
+      "ranks": 3,
       "inputRanks": [
         [
           {
@@ -33,14 +33,6 @@
             "source": 2,
             "position": 2
           }
-        ],
-        [
-          {
-            "id": "d",
-            "label": "D",
-            "source": 3,
-            "position": 3
-          }
         ]
       ],
       "resultChunks": {
@@ -55,36 +47,23 @@
         "c": {
           "label": "C",
           "description": "Shard originally owned by rank 2."
-        },
-        "d": {
-          "label": "D",
-          "description": "Shard originally owned by rank 3."
         }
       },
       "outputRanks": [
         [
           "a",
           "b",
-          "c",
-          "d"
+          "c"
         ],
         [
           "a",
           "b",
-          "c",
-          "d"
+          "c"
         ],
         [
           "a",
           "b",
-          "c",
-          "d"
-        ],
-        [
-          "a",
-          "b",
-          "c",
-          "d"
+          "c"
         ]
       ],
       "insight": "AllGather preserves every shard and replicates the concatenated tensor. No reduction occurs.",
