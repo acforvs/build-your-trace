@@ -124,7 +124,7 @@ SCENARIOS = {
         "Eight-GPU expert FSDP2 plus four-way expert parallelism",
         "profile_torchtitan_qwen3.py",
         8,
-        ("--scenario", "fsdp_ep", "--ep-degree", "4", "--prefetch-policy", "dependency_ordered", "--batch", "1", "--sequence", "4096", "--warmup", "2", "--steps", "1"),
+        ("--scenario", "fsdp_ep", "--ep-degree", "4", "--prefetch-policy", "dependency_ordered_experts_first_backward", "--batch", "1", "--sequence", "4096", "--warmup", "2", "--steps", "1"),
     ),
     "dense-cp4-allgather": Scenario(
         "Four-GPU ring context parallelism with K/V all-gather",

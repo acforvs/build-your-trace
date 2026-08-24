@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/build-your-trace/recognition.schema.json",
+  "title": "Build Your Trace recognition rounds",
+  "type": "object",
+  "required": ["rounds"],
+  "additionalProperties": false,
+  "properties": {
+    "rounds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "order", "title", "summary", "trace", "choice", "evidence", "reveal"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^mystery-[0-9]{2}$" },
+          "order": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "pattern": "^Mystery trace [0-9]{2}$" },
+          "summary": { "type": "string", "minLength": 1 },
+          "trace": {
+            "type": "object",
+            "required": ["taskId", "window", "tracks", "context"],
+            "additionalProperties": false,
+            "properties": {
+              "taskId": { "type": "string", "minLength": 1 },
+              "variantId": { "type": "string", "minLength": 1 },
+              "context": { "type": "string", "minLength": 1 },
+              "anonymizedBlockLabels": {
+                "type": "object",
+                "additionalProperties": { "type": "string", "minLength": 1 }
+              },
+              "window": {
+                "type": "object",
+                "required": ["startMs", "endMs"],
+                "additionalProperties": false,
+                "properties": {
+                  "startMs": { "type": "number", "minimum": 0 },
+                  "endMs": { "type": "number", "exclusiveMinimum": 0 }
+                }
+              },
+              "tracks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+            }
+          },
+          "choice": {
+            "type": "object",
+            "required": ["prompt", "options", "answerOptionId", "explanation"],
+            "additionalProperties": false,
+            "properties": {
+              "prompt": { "type": "string", "minLength": 1 },
+              "options": {
+                "type": "array", "minItems": 3, "maxItems": 4,
+                "items": {
+                  "type": "object", "required": ["id", "label", "nudge"], "additionalProperties": false,
+                  "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "nudge": { "type": "string" } }
+                }
+              },
+              "answerOptionId": { "type": "string" },
+              "explanation": { "type": "string", "minLength": 1 }
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "required": ["prompt", "options", "answerOptionId", "answerBlockIds", "explanation"],
+            "additionalProperties": false,
+            "properties": {
+              "prompt": { "type": "string", "minLength": 1 },
+              "options": {
+                "type": "array", "minItems": 3, "maxItems": 4,
+                "items": {
+                  "type": "object", "required": ["id", "label", "nudge"], "additionalProperties": false,
+                  "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "nudge": { "type": "string" } }
+                }
+              },
+              "answerOptionId": { "type": "string" },
+              "answerBlockIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+              "explanation": { "type": "string", "minLength": 1 }
+            }
+          },
+          "reveal": {
+            "type": "object", "required": ["title", "debrief", "buildLabel"], "additionalProperties": false,
+            "properties": { "title": { "type": "string" }, "debrief": { "type": "string" }, "buildLabel": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

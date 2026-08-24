@@ -6,21 +6,21 @@
     "taskOverrides": {
       "topology": "Dense FSDP=8 cross-node · Expert FSDP=8 cross-node · EP=1",
       "scope": "Complete 2-layer forward + loss + backward · analytical NDR400 FSDP",
-      "totalMs": 768.018284,
+      "totalMs": 770.341023,
       "pxPerMs": 8,
       "description": [
-        "This analytical variant keeps every measured compute duration and the dependency-ordered EP=1 schedule, changing only FSDP communication to cross-node NDR400 InfiniBand.",
+        "This analytical variant keeps every measured compute duration and the experts-first EP=1 backward schedule, changing only FSDP communication to cross-node NDR400 InfiniBand.",
         "Each rank is modeled with one 400 Gb/s rail: 50 GB/s peak and 42.5 GB/s effective. Eight node rails do not provide 400 GB/s to each rank.",
         "With all 128 experts under FSDP=8, one expert AG moves 3.9375 GiB per rank and one FP32 expert RS moves 7.875 GiB per rank."
       ],
-      "insight": "With EP=1 over InfiniBand, each expert all-gather takes about 100 ms and each expert reduce-scatter about 200 ms."
+      "insight": "EP=1 expert FSDP is decisively cross-node communication-bound: each expert AG is about 99.5 ms and each expert RS about 199.0 ms."
     },
     "verification": {
       "status": "modeled",
       "label": "Analytical NDR400 model · 42.5 GB/s effective per rank",
       "implementation": "Measured EP=1 expert-FSDP dependency graph with byte-derived cross-node collectives",
       "workload": "Same two Qwen-shaped layers; FSDP=8 for dense and all 128 experts; EP=1.",
-      "measurement": "768.018 ms modeled collective window; compute durations unchanged from H100 capture."
+      "measurement": "770.341 ms modeled collective window; compute durations unchanged from H100 capture."
     },
     "model": {
       "peakGbpsPerRank": 400,
@@ -48,178 +48,178 @@
         "description": "Token-embedding parameter all-gather Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l0-dense-fwd-ag": {
-        "startMs": 0.730977,
+        "startMs": 0.849344,
         "durationMs": 3.008,
         "description": "Layer 0 attention and router parameter all-gather Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l0-expert-fwd-ag": {
-        "startMs": 3.738977,
+        "startMs": 3.857344,
         "durationMs": 99.529022,
         "description": "Reconstruct all 128 experts. Ring traffic is 4.5 GiB × 7/8 = 3.9375 GiB per rank. Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l1-dense-fwd-ag": {
-        "startMs": 103.267999,
+        "startMs": 103.386366,
         "durationMs": 3.008,
         "description": "Prefetch layer 1 attention and router parameters Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l1-expert-fwd-ag": {
-        "startMs": 106.275999,
+        "startMs": 106.394366,
         "durationMs": 99.529022,
         "description": "Prefetch layer 1 full-expert weights Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "embedding-fwd": {
-        "startMs": 1.343201
+        "startMs": 2.773825
       },
       "l0-attention-fwd": {
-        "startMs": 3.738977
+        "startMs": 4.311937
       },
       "l0-router-fwd": {
-        "startMs": 7.408577
+        "startMs": 7.160162
       },
       "l0-permute-fwd": {
-        "startMs": 7.605633
+        "startMs": 7.325794
       },
       "l0-expert-copyout-fwd": {
-        "startMs": 103.267999
+        "startMs": 103.386366
       },
       "l0-experts-fwd": {
-        "startMs": 107.277663
+        "startMs": 107.389343
       },
       "l0-unpermute-fwd": {
-        "startMs": 113.153184
+        "startMs": 113.302624
       },
       "l1-attention-fwd": {
-        "startMs": 115.768384
+        "startMs": 115.929377
       },
       "l1-router-fwd": {
-        "startMs": 118.813825
+        "startMs": 118.939746
       },
       "l1-permute-fwd": {
-        "startMs": 118.989185
+        "startMs": 119.107458
       },
       "root-fwd-ag": {
-        "startMs": 205.805021,
+        "startMs": 205.923388,
         "durationMs": 0.093345,
         "description": "Final norm and output parameter all-gather Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l1-expert-copyout-fwd": {
-        "startMs": 205.805021
+        "startMs": 205.923388
       },
       "l1-experts-fwd": {
-        "startMs": 209.155421
+        "startMs": 209.26262
       },
       "l1-unpermute-fwd": {
-        "startMs": 212.626302
+        "startMs": 212.737117
       },
       "root-forward-loss": {
-        "startMs": 214.357374
-      },
-      "l1-dense-bwd-ag": {
-        "startMs": 214.492926,
-        "durationMs": 3.008,
-        "description": "Backward prefetch: layer 1 attention and router parameters Duration is analytically modeled over cross-node NDR400 InfiniBand."
-      },
-      "root-backward": {
-        "startMs": 214.501534
-      },
-      "l1-unpermute-bwd": {
-        "startMs": 215.510142
+        "startMs": 214.465085
       },
       "l1-expert-bwd-ag": {
-        "startMs": 217.500926,
+        "startMs": 214.041718,
         "durationMs": 99.529022,
-        "description": "Backward prefetch: layer 1 full-expert weights Duration is analytically modeled over cross-node NDR400 InfiniBand."
+        "description": "First layer 1 backward parameter collective, matching reverse parameter-use order. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-dense-bwd-ag": {
+        "startMs": 313.573812,
+        "durationMs": 3.008,
+        "description": "Gather layer 1 attention, norm, and router parameters after its experts. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "root-backward": {
+        "startMs": 214.693342
       },
       "root-rs": {
-        "startMs": 317.032764,
+        "startMs": 316.585412,
         "durationMs": 0.137,
         "description": "Output and final-norm gradient reduce-scatter Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
-      "l1-expert-copyout-bwd": {
-        "startMs": 317.046428
-      },
-      "l0-dense-bwd-ag": {
-        "startMs": 318.295772,
-        "durationMs": 3.008,
-        "description": "Backward prefetch: layer 0 attention and router parameters Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      "l1-unpermute-bwd": {
+        "startMs": 317.411135
       },
       "l0-expert-bwd-ag": {
-        "startMs": 321.303772,
+        "startMs": 318.767028,
         "durationMs": 99.529022,
-        "description": "Backward prefetch: layer 0 full-expert weights Duration is analytically modeled over cross-node NDR400 InfiniBand."
+        "description": "Prefetch layer 0 experts while layer 1 backward progresses. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l0-dense-bwd-ag": {
+        "startMs": 418.307602,
+        "durationMs": 3.008,
+        "description": "Gather layer 0 attention, norm, and router parameters after layer 0 experts. Duration is analytically modeled over cross-node NDR400 InfiniBand."
+      },
+      "l1-expert-copyout-bwd": {
+        "startMs": 320.729823
       },
       "l1-experts-bwd": {
-        "startMs": 320.729117
+        "startMs": 324.933728
       },
       "l1-expert-grad-pack": {
-        "startMs": 334.928991
+        "startMs": 337.935331
       },
       "l1-expert-rs": {
-        "startMs": 342.494528,
+        "startMs": 344.833205,
         "durationMs": 199.008044,
         "description": "Ring traffic is 9 GiB × 7/8 = 7.875 GiB per rank. Most of this collective is exposed after attention backward completes. Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l1-permute-bwd": {
-        "startMs": 342.496288
+        "startMs": 345.484004
       },
       "l1-router-bwd": {
-        "startMs": 343.288992
+        "startMs": 346.250437
       },
       "l1-attention-bwd": {
-        "startMs": 343.70992
+        "startMs": 346.659429
       },
       "l1-dense-grad-pack": {
-        "startMs": 541.518316
+        "startMs": 543.896309
       },
       "l1-dense-rs": {
-        "startMs": 541.755084,
+        "startMs": 544.090945,
         "durationMs": 5.966,
         "description": "Layer 1 dense-gradient reduce-scatter Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l0-unpermute-bwd": {
-        "startMs": 541.90414
+        "startMs": 544.277621
       },
       "embedding-bwd-ag": {
-        "startMs": 542.65374,
+        "startMs": 545.026337,
         "durationMs": 0.093177,
         "description": "Backward prefetch: token-embedding parameters Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l0-expert-copyout-bwd": {
-        "startMs": 544.071373
+        "startMs": 546.444917
       },
       "l0-experts-bwd": {
-        "startMs": 547.400749
+        "startMs": 549.783766
       },
       "l0-expert-grad-pack": {
-        "startMs": 555.077902
+        "startMs": 557.466647
       },
       "l0-expert-rs": {
-        "startMs": 562.625231,
+        "startMs": 564.953858,
         "durationMs": 199.008044,
         "description": "Layer 0 full-expert gradient reduce-scatter Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "l0-permute-bwd": {
-        "startMs": 562.626671
+        "startMs": 565.017305
       },
       "l0-router-bwd": {
-        "startMs": 563.395023
+        "startMs": 565.789209
       },
       "l0-attention-bwd": {
-        "startMs": 563.812399
+        "startMs": 566.169305
       },
       "l0-dense-grad-pack": {
-        "startMs": 761.653499
+        "startMs": 764.095849
       },
       "l0-dense-rs": {
-        "startMs": 761.890587,
+        "startMs": 764.214158,
         "durationMs": 5.966,
         "description": "Layer 0 dense-gradient reduce-scatter Duration is analytically modeled over cross-node NDR400 InfiniBand."
       },
       "embedding-bwd": {
-        "startMs": 761.892251
+        "startMs": 764.337833
       },
       "embedding-rs": {
-        "startMs": 767.881931,
+        "startMs": 770.20467,
         "durationMs": 0.136353,
         "description": "Token-embedding gradient reduce-scatter Duration is analytically modeled over cross-node NDR400 InfiniBand."
       }

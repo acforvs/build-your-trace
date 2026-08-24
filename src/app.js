@@ -3,6 +3,7 @@ const methodDialog = document.querySelector("#method-dialog");
 const methodContent = document.querySelector("#method-content");
 const progressKey = "build-your-trace:completed:v1";
 const comparisonProgressKey = "build-your-trace:comparisons-completed:v1";
+const recognitionProgressKey = "build-your-trace:recognition-completed:v1";
 const comparisonJourneyKey = "build-your-trace:comparison-journeys:v1";
 const collectiveProgressKey = "build-your-trace:collectives-completed:v1";
 const collectivePlacementKey = "build-your-trace:collective-placements:v1";
@@ -12,7 +13,7 @@ const scrollPositionKey = "build-your-trace:scroll-positions:v1";
 const themeKey = "build-your-trace:theme:v1";
 const placementKey = "build-your-trace:placements:v1";
 const taskTimelineLabelWidth = 128;
-const state = { tasks: [], comparisons: [], collectives: [], assumptions: {}, resources: {}, social: {}, activeBlock: null, keyboardOrigin: null, placements: new Map(), completed: new Set(), comparisonsCompleted: new Set(), collectivesCompleted: new Set(), solutionRevealed: false, preRevealPlacements: null, activeTask: null, timelineZoom: 1, timelineNaturalWidth: 0, timelineAtFit: false, timelineZoomController: null, comparisonZoomControllers: [], focusedComparisonSide: null, suppressPlacementSave: false, activeDebriefIndex: 0, cancelInteraction: null };
+const state = { tasks: [], comparisons: [], recognition: [], collectives: [], assumptions: {}, resources: {}, social: {}, activeBlock: null, keyboardOrigin: null, placements: new Map(), completed: new Set(), comparisonsCompleted: new Set(), recognitionCompleted: new Set(), collectivesCompleted: new Set(), solutionRevealed: false, preRevealPlacements: null, activeTask: null, timelineZoom: 1, timelineNaturalWidth: 0, timelineAtFit: false, timelineZoomController: null, comparisonZoomControllers: [], focusedComparisonSide: null, suppressPlacementSave: false, activeDebriefIndex: 0, cancelInteraction: null };
 let activeRouteKey = null;
 let scrollTrackingReady = false;
 let pendingChallengeScroll = false;
@@ -187,6 +188,11 @@ async function loadData() {
     if (!comparisonResponse.ok) throw new Error(`Could not load comparison labs: ${data.comparisonFile}`);
     state.comparisons = ((await comparisonResponse.json()).comparisons || []).sort((left, right) => left.order - right.order);
   }
+  if (data.recognitionFile) {
+    const recognitionResponse = await fetch(data.recognitionFile);
+    if (!recognitionResponse.ok) throw new Error(`Could not load recognition rounds: ${data.recognitionFile}`);
+    state.recognition = ((await recognitionResponse.json()).rounds || []).sort((left, right) => left.order - right.order);
+  }
   if (data.collectiveFile) {
     const collectiveResponse = await fetch(data.collectiveFile);
     if (!collectiveResponse.ok) throw new Error(`Could not load collective lessons: ${data.collectiveFile}`);
@@ -198,6 +204,7 @@ async function loadData() {
   state.social = data.social || {};
   try { state.completed = new Set(JSON.parse(localStorage.getItem(progressKey) || "[]")); } catch { state.completed = new Set(); }
   try { state.comparisonsCompleted = new Set(JSON.parse(localStorage.getItem(comparisonProgressKey) || "[]")); } catch { state.comparisonsCompleted = new Set(); }
+  try { state.recognitionCompleted = new Set(JSON.parse(localStorage.getItem(recognitionProgressKey) || "[]")); } catch { state.recognitionCompleted = new Set(); }
   try { state.collectivesCompleted = new Set(JSON.parse(localStorage.getItem(collectiveProgressKey) || "[]")); } catch { state.collectivesCompleted = new Set(); }
 }
 
@@ -281,7 +288,7 @@ function renderHome() {
     .filter((task) => !task.catalogHidden)
     .sort((left, right) => left.order - right.order);
   const verifiedCount = catalogTasks.filter((task) => task.verification?.status === "measured").length;
-  fragment.querySelector("[data-task-count]").textContent = `${verifiedCount} trace builds · ${state.comparisons.length} comparison labs`;
+  fragment.querySelector("[data-task-count]").textContent = `${verifiedCount} trace builds · ${state.comparisons.length} comparison labs · ${state.recognition.length} recognition rounds`;
   const filterOrder = ["MoE", "Data Parallel", "Tensor Parallel", "Sequence Parallel", "FSDP", "Expert Parallel", "Context Parallel"];
   const filters = ["All", ...filterOrder.filter((filter) => catalogTasks.some((task) => task.catalogTags?.includes(filter)))];
   const filterRow = fragment.querySelector(".filter-row");
@@ -352,6 +359,13 @@ function renderHome() {
       <div class="card-tags">${comparison.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>
       <div class="card-footer"><span>${comparison.questions.length} reasoning steps</span><b class="card-entry">Open lab <i>→</i></b></div>
     </a>`).join("")}</div></section>`).join("");
+  const recognitionGrid = fragment.querySelector("[data-recognition-grid]");
+  recognitionGrid.innerHTML = state.recognition.map((round) => `<a class="comparison-card${state.recognitionCompleted.has(round.id) ? " completed" : ""}" data-card-family="collective" href="#/recognize/${escapeHtml(round.id)}">
+    <div class="comparison-card-top"><span>Round ${String(round.order).padStart(2, "0")}</span>${state.recognitionCompleted.has(round.id) ? "<b>Completed ✓</b>" : ""}</div>
+    <h3>${escapeHtml(state.recognitionCompleted.has(round.id) ? round.reveal.title : round.title)}</h3>
+    <p>${escapeHtml(round.summary)}</p>
+    <div class="card-footer"><span>2 recognition steps</span><b class="card-entry">Inspect trace <i>→</i></b></div>
+  </a>`).join("");
   const contents = [
     { label: "Collective primer", count: state.collectives.length, panel: "collectives", target: "collective-primer" },
     ...[...taskSectionMeta.entries()].map(([section, meta]) => ({
@@ -362,10 +376,12 @@ function renderHome() {
       taskSection: true,
     })),
     { label: "Comparison labs", count: state.comparisons.length, panel: "compare", target: "explain-trace" },
+    { label: "Name that parallelism", count: state.recognition.length, panel: "recognize", target: "name-parallelism" },
   ];
   fragment.querySelector("[data-contents-links]").innerHTML = contents.map((item) => `<button type="button" data-contents-panel="${item.panel}" data-contents-target="${item.target}"${item.taskSection ? " data-task-section" : ""}><span>${escapeHtml(item.label)}</span><small>${item.count}</small></button>`).join("");
   fragment.querySelector("[data-build-count]").textContent = `${catalogTasks.length} challenges`;
   fragment.querySelector("[data-comparison-count]").textContent = `${state.comparisons.length} labs`;
+  fragment.querySelector("[data-recognition-count]").textContent = `${state.recognition.length} rounds`;
   fragment.querySelector("[data-collective-count]").textContent = `${state.collectives.length} primitives`;
   configureGithubLinks(fragment);
   app.replaceChildren(fragment);
@@ -823,7 +839,7 @@ function bindTimelineZoom() {
 function traceIsSolved(task) {
   const playableBlocks = task.blocks.filter((block) => !block.fixed);
   return playableBlocks.length === state.placements.size
-    && playableBlocks.every((block) => state.placements.get(block.id) === targetSlotId(task, block));
+    && playableBlocks.every((block) => placementIsCorrect(task, block, state.placements.get(block.id)));
 }
 
 function debriefDependencies(task) {
@@ -1070,6 +1086,10 @@ function targetSlotId(task, block) {
   return task.timelineMode === "absolute" ? block.id : `${block.track}:${block.phase}`;
 }
 
+function placementIsCorrect(task, block, slotId) {
+  return (block.acceptedSlotIds || [targetSlotId(task, block)]).includes(slotId);
+}
+
 function getCalloutPresentation(task, block) {
   if (task.timelineMode !== "absolute" || block.marker) return null;
   const pxPerMs = task.pxPerMs || 24;
@@ -1229,7 +1249,7 @@ function returnFromSolution(task) {
 function checkTrace(task) {
   const playableBlocks = task.blocks.filter((block) => !block.fixed);
   const placedBlocks = playableBlocks.filter((block) => state.placements.has(block.id));
-  const mistakes = placedBlocks.filter((block) => state.placements.get(block.id) !== targetSlotId(task, block));
+  const mistakes = placedBlocks.filter((block) => !placementIsCorrect(task, block, state.placements.get(block.id)));
   const unplaced = playableBlocks.length - placedBlocks.length;
   app.querySelectorAll(".trace-slot").forEach((slot) => slot.classList.remove("correct", "incorrect"));
   placedBlocks.forEach((block) => {
@@ -1296,32 +1316,36 @@ function bindGameActions(task) {
   focusButton.addEventListener("click", () => setTraceFocus(!document.body.classList.contains("trace-focus")));
 }
 
-function renderReadOnlyTrace(view, side, scaleMs) {
+function renderReadOnlyTrace(view, side, scaleMs, { anonymize = false } = {}) {
   const sourceTask = state.tasks.find((item) => item.id === view.taskId);
   const task = sourceTask && view.variantId ? resolveTaskVariant(sourceTask, view.variantId) : sourceTask;
   if (!task || task.timelineMode !== "absolute") throw new Error(`Comparison source must be an absolute trace: ${view.taskId}`);
+  const startMs = view.window?.startMs ?? view.startMs;
+  const endMs = view.window?.endMs ?? view.endMs;
   const tracks = task.tracks.filter((track) => view.tracks.includes(track.id));
   const blocks = task.blocks.filter((block) => (
     view.tracks.includes(block.track) &&
-    block.startMs < view.endMs &&
-    block.startMs + block.durationMs > view.startMs
+    block.startMs < endMs &&
+    block.startMs + block.durationMs > startMs
   ));
   const article = document.createElement("article");
-  article.className = "comparison-trace-panel";
+  article.className = `comparison-trace-panel${anonymize ? " anonymized" : ""}`;
   article.dataset.traceSide = side;
-  article.innerHTML = `<header><div><span>${escapeHtml(view.label)}</span><h2>${escapeHtml(task.title)}</h2></div><small>${(view.endMs - view.startMs).toFixed(2)} ms window</small></header><p>${escapeHtml(view.caption)}</p><div class="comparison-panel-toolbar"><div class="timeline-zoom" aria-label="${escapeHtml(view.label)} trace zoom"><button type="button" data-panel-fit>Fit</button><button type="button" data-panel-zoom-out aria-label="Zoom out">−</button><span data-panel-zoom-level>100%</span><button type="button" data-panel-zoom-in aria-label="Zoom in">+</button></div><button class="focus-button" type="button" data-panel-focus aria-pressed="false"><span class="focus-icon" aria-hidden="true"></span><span data-focus-label>Focus</span></button></div><div class="comparison-trace-scroll"><div class="comparison-trace"><div class="comparison-ruler"><span>0</span><span>shared scale: ${scaleMs.toFixed(2)} ms</span></div><div data-comparison-rows></div></div></div>`;
+  const panelLabel = anonymize ? "Anonymized measured window" : (view.label || "Measured trace revealed");
+  const panelCaption = anonymize ? "" : (view.caption || view.context);
+  article.innerHTML = `<header><div><span>${escapeHtml(panelLabel)}</span><h2>${anonymize ? "Unknown setup" : escapeHtml(task.title)}</h2></div><small>${(endMs - startMs).toFixed(2)} ms window</small></header>${panelCaption ? `<p>${escapeHtml(panelCaption)}</p>` : ""}<div class="comparison-panel-toolbar"><div class="timeline-zoom" aria-label="${escapeHtml(panelLabel)} trace zoom"><button type="button" data-panel-fit>Fit</button><button type="button" data-panel-zoom-out aria-label="Zoom out">−</button><span data-panel-zoom-level>100%</span><button type="button" data-panel-zoom-in aria-label="Zoom in">+</button></div><button class="focus-button" type="button" data-panel-focus aria-pressed="false"><span class="focus-icon" aria-hidden="true"></span><span data-focus-label>Focus</span></button></div><div class="comparison-trace-scroll"><div class="comparison-trace"><div class="comparison-ruler"><span>0</span><span>${anonymize ? "measured relative time" : `window scale: ${scaleMs.toFixed(2)} ms`}</span></div><div data-comparison-rows></div></div></div>`;
   const rows = article.querySelector("[data-comparison-rows]");
-  tracks.forEach((track) => {
+  tracks.forEach((track, trackIndex) => {
     const row = document.createElement("div");
     row.className = "comparison-trace-row";
-    row.innerHTML = `<div class="comparison-track-label"><b>${escapeHtml(track.label)}</b><small>${escapeHtml(track.subtitle || "")}</small></div><div class="comparison-track-lane"></div>`;
+    row.innerHTML = `<div class="comparison-track-label"><b>${escapeHtml(anonymize ? `Stream ${String.fromCharCode(65 + trackIndex)}` : track.label)}</b>${anonymize ? "" : `<small>${escapeHtml(track.subtitle || "")}</small>`}</div><div class="comparison-track-lane"></div>`;
     const lane = row.querySelector(".comparison-track-lane");
     const trackBlocks = blocks.filter((block) => block.track === track.id).sort((left, right) => left.startMs - right.startMs);
     const laneEnds = [];
     const blockLanes = new Map();
     trackBlocks.forEach((block) => {
-      const visibleStart = Math.max(block.startMs, view.startMs);
-      const visibleEnd = Math.min(block.startMs + block.durationMs, view.endMs);
+      const visibleStart = Math.max(block.startMs, startMs);
+      const visibleEnd = Math.min(block.startMs + block.durationMs, endMs);
       let laneIndex = laneEnds.findIndex((end) => end <= visibleStart + .0001);
       if (laneIndex < 0) laneIndex = laneEnds.length;
       laneEnds[laneIndex] = visibleEnd;
@@ -1331,22 +1355,23 @@ function renderReadOnlyTrace(view, side, scaleMs) {
     row.style.minHeight = `${rowHeight}px`;
     lane.style.minHeight = `${rowHeight}px`;
     trackBlocks.forEach((block) => {
-      const visibleStart = Math.max(block.startMs, view.startMs);
-      const visibleEnd = Math.min(block.startMs + block.durationMs, view.endMs);
-      const left = (visibleStart - view.startMs) / scaleMs * 100;
+      const visibleStart = Math.max(block.startMs, startMs);
+      const visibleEnd = Math.min(block.startMs + block.durationMs, endMs);
+      const left = (visibleStart - startMs) / scaleMs * 100;
       const width = (visibleEnd - visibleStart) / scaleMs * 100;
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `comparison-trace-block ${typeMeta[block.type].className}${width < 4 ? " comparison-micro-block" : ""}`;
+      const anonymousLabel = anonymize ? view.anonymizedBlockLabels?.[block.id] : null;
+      button.className = `comparison-trace-block ${typeMeta[block.type].className}${width < 4 ? " comparison-micro-block" : ""}${anonymousLabel ? " has-anonymous-label" : ""}`;
       button.style.left = `${left}%`;
       button.style.width = `${width}%`;
       button.style.top = `${10 + blockLanes.get(block.id) * 36}px`;
       button.dataset.comparisonBlock = block.id;
       button.dataset.comparisonSide = side;
-      button.setAttribute("aria-label", block.label);
+      button.setAttribute("aria-label", anonymize ? `Unknown ${typeMeta[block.type].label.toLowerCase()} block` : block.label);
       const viewLabel = view.blockLabels?.[block.id];
-      button.innerHTML = `<span>${escapeHtml(viewLabel || block.shortLabel || block.label.replace(/^Fixed context:\s*/i, ""))}</span>`;
-      bindBlockTooltip(button, block);
+      button.innerHTML = anonymize ? `<span>${escapeHtml(anonymousLabel || "")}</span>` : `<span>${escapeHtml(viewLabel || block.shortLabel || block.label.replace(/^Fixed context:\s*/i, ""))}</span>`;
+      if (!anonymize) bindBlockTooltip(button, block);
       lane.append(button);
     });
     rows.append(row);
@@ -1545,6 +1570,143 @@ function renderComparison(comparison) {
     return true;
   };
   showQuestion();
+}
+
+function renderRecognition(round) {
+  if (document.body.classList.contains("trace-focus")) void setTraceFocus(false);
+  if (document.body.classList.contains("comparison-focus")) setComparisonFocus(app.querySelector(".comparison-trace-panel.is-focused"), false);
+  const fragment = document.querySelector("#recognition-template").content.cloneNode(true);
+  const previouslyCompleted = state.recognitionCompleted.has(round.id);
+  fragment.querySelector("[data-recognition-kicker]").textContent = `Chapter 3 · ${previouslyCompleted ? "Solved" : "Recognition"} round ${String(round.order).padStart(2, "0")}`;
+  fragment.querySelector("[data-recognition-title]").textContent = previouslyCompleted ? round.reveal.title : round.title;
+  fragment.querySelector("[data-recognition-summary]").textContent = round.summary;
+  fragment.querySelector("[data-recognition-progress]").textContent = "2 recognition steps";
+  fragment.querySelector("[data-recognition-context]").textContent = round.trace.context;
+  const recognitionSource = state.tasks.find((item) => item.id === round.trace.taskId);
+  const recognitionTask = recognitionSource && round.trace.variantId ? resolveTaskVariant(recognitionSource, round.trace.variantId) : recognitionSource;
+  const visibleTypes = [...new Set(recognitionTask.blocks.filter((block) => (
+    round.trace.tracks.includes(block.track) &&
+    block.startMs < round.trace.window.endMs &&
+    block.startMs + block.durationMs > round.trace.window.startMs
+  )).map((block) => block.type))];
+  fragment.querySelector("[data-recognition-legend]").innerHTML = visibleTypes.map((type) => `<span><i class="${escapeHtml(typeMeta[type].className)}"></i>${escapeHtml(typeMeta[type].label)}</span>`).join("");
+  app.replaceChildren(fragment);
+  document.title = `${previouslyCompleted ? round.reveal.title : round.title} — Build Your Trace`;
+
+  const traceRoot = app.querySelector("[data-recognition-trace]");
+  const windowMs = round.trace.window.endMs - round.trace.window.startMs;
+  const drawTrace = (anonymize) => {
+    state.comparisonZoomControllers.forEach(({ controller }) => controller.destroy());
+    traceRoot.replaceChildren(renderReadOnlyTrace(round.trace, "recognition", windowMs, { anonymize }));
+    bindComparisonViewport();
+  };
+  drawTrace(!previouslyCompleted);
+
+  const panel = app.querySelector("[data-recognition-question]");
+  if (previouslyCompleted) {
+    round.evidence.answerBlockIds.forEach((blockId) => app.querySelector(`.comparison-trace-block[data-comparison-block="${CSS.escape(blockId)}"]`)?.classList.add("correct"));
+    const completedIndex = state.recognition.findIndex((item) => item.id === round.id);
+    const completedNext = state.recognition[completedIndex + 1];
+    panel.innerHTML = `<div class="question-count">Round complete</div><h2>${escapeHtml(round.reveal.title)}</h2><p class="question-instruction">${escapeHtml(round.evidence.explanation)}</p><div class="recognition-reveal"><strong>What the trace shows</strong><p>${escapeHtml(round.reveal.debrief)}</p><a href="#/task/${escapeHtml(round.trace.taskId)}">Now build it: ${escapeHtml(round.reveal.buildLabel)} <span>→</span></a></div><div class="question-actions">${completedNext ? `<a class="secondary-button" href="#/recognize/${escapeHtml(completedNext.id)}">Next round <span>→</span></a>` : ""}<a class="secondary-button" href="#/">Challenge library <span>→</span></a></div>`;
+    state.cancelInteraction = null;
+    return;
+  }
+  const options = panel.querySelector("[data-question-options]");
+  const feedback = panel.querySelector("[data-question-feedback]");
+  const checkButton = panel.querySelector("[data-question-check]");
+  const nextButton = panel.querySelector("[data-question-next]");
+  const doneLink = panel.querySelector("[data-recognition-done]");
+  const nextRoundLink = panel.querySelector("[data-recognition-next]");
+  const reveal = panel.querySelector("[data-recognition-reveal]");
+  const nextRound = state.recognition[state.recognition.findIndex((item) => item.id === round.id) + 1];
+  if (nextRound) nextRoundLink.href = `#/recognize/${nextRound.id}`;
+  let step = 0;
+  let selectedOptionId = null;
+
+  const clearTraceSelection = () => app.querySelectorAll(".comparison-trace-block").forEach((block) => block.classList.remove("selected", "correct", "incorrect"));
+  const showStep = () => {
+    selectedOptionId = null;
+    feedback.className = "question-feedback";
+    feedback.textContent = "";
+    checkButton.disabled = true;
+    checkButton.hidden = false;
+    nextButton.hidden = true;
+    options.hidden = false;
+    clearTraceSelection();
+    app.querySelectorAll(".comparison-trace-block").forEach((block) => {
+      block.dataset.answerable = "false";
+      block.setAttribute("aria-disabled", "true");
+      block.classList.add("not-answerable");
+    });
+    const question = step === 0 ? round.choice : round.evidence;
+    const optionOffset = ((round.order * 3) + step) % question.options.length;
+    const displayOptions = [...question.options.slice(optionOffset), ...question.options.slice(0, optionOffset)];
+    panel.querySelector("[data-question-count]").textContent = step === 0 ? "Identify · step 1 of 2" : "Evidence · step 2 of 2";
+    panel.querySelector("[data-question-prompt]").textContent = question.prompt;
+    panel.querySelector("[data-question-instruction]").textContent = step === 0
+      ? "Choose the setup that best explains the visible structure."
+      : "Choose the structural evidence that supports your identification.";
+    options.innerHTML = displayOptions.map((option) => `<button type="button" data-question-option="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`).join("");
+    options.querySelectorAll("[data-question-option]").forEach((button) => button.addEventListener("click", () => {
+      options.querySelectorAll("button").forEach((item) => item.classList.remove("selected", "incorrect"));
+      button.classList.add("selected");
+      selectedOptionId = button.dataset.questionOption;
+      feedback.textContent = "";
+      checkButton.disabled = false;
+    }));
+  };
+
+  checkButton.addEventListener("click", () => {
+    const question = step === 0 ? round.choice : round.evidence;
+    const option = question.options.find((item) => item.id === selectedOptionId);
+    const selected = options.querySelector(`[data-question-option="${CSS.escape(selectedOptionId || "")}"]`);
+    if (selectedOptionId !== question.answerOptionId) {
+      selected?.classList.add("incorrect");
+      feedback.className = "question-feedback error";
+      feedback.textContent = option?.nudge || "That pattern does not match the visible dependencies.";
+      return;
+    }
+    selected?.classList.add("correct");
+    feedback.className = "question-feedback success";
+    feedback.textContent = question.explanation;
+    if (step === 0) {
+      checkButton.hidden = true;
+      nextButton.hidden = false;
+      return;
+    }
+    state.recognitionCompleted.add(round.id);
+    localStorage.setItem(recognitionProgressKey, JSON.stringify([...state.recognitionCompleted]));
+    drawTrace(false);
+    app.querySelector("[data-recognition-kicker]").textContent = `Chapter 3 · Solved round ${String(round.order).padStart(2, "0")}`;
+    app.querySelector("[data-recognition-title]").textContent = round.reveal.title;
+    round.evidence.answerBlockIds.forEach((blockId) => app.querySelector(`.comparison-trace-block[data-comparison-block="${CSS.escape(blockId)}"]`)?.classList.add("correct"));
+    document.title = `${round.reveal.title} — Build Your Trace`;
+    feedback.className = "question-feedback success";
+    feedback.textContent = round.evidence.explanation;
+    reveal.hidden = false;
+    reveal.innerHTML = `<strong>${escapeHtml(round.reveal.title)}</strong><p>${escapeHtml(round.reveal.debrief)}</p><a href="#/task/${escapeHtml(round.trace.taskId)}">Now build it: ${escapeHtml(round.reveal.buildLabel)} <span>→</span></a>`;
+    panel.querySelector("[data-question-count]").textContent = "Round complete";
+    checkButton.hidden = true;
+    doneLink.hidden = false;
+    nextRoundLink.hidden = !nextRound;
+    feedback.insertAdjacentHTML("beforeend", completionGithubLink());
+  });
+
+  nextButton.addEventListener("click", () => {
+    step = 1;
+    showStep();
+  });
+  state.cancelInteraction = () => {
+    if (!selectedOptionId) return false;
+    selectedOptionId = null;
+    clearTraceSelection();
+    options.querySelectorAll("button").forEach((item) => item.classList.remove("selected", "incorrect"));
+    feedback.className = "question-feedback";
+    feedback.textContent = "Selection cleared.";
+    checkButton.disabled = true;
+    return true;
+  };
+  showStep();
 }
 
 function readCollectivePlacements() {
@@ -1755,6 +1917,16 @@ function route({ restoreScroll = false } = {}) {
   if (comparisonMatch) {
     const comparison = state.comparisons.find((item) => item.id === comparisonMatch[1]);
     if (comparison) renderComparison(comparison);
+    else renderHome();
+    activeRouteKey = nextRouteKey;
+    positionRoute(nextRouteKey, restoreScroll);
+    app.focus({ preventScroll: true });
+    return;
+  }
+  const recognitionMatch = location.hash.match(/^#\/recognize\/([^/]+)$/);
+  if (recognitionMatch) {
+    const round = state.recognition.find((item) => item.id === recognitionMatch[1]);
+    if (round) renderRecognition(round);
     else renderHome();
     activeRouteKey = nextRouteKey;
     positionRoute(nextRouteKey, restoreScroll);

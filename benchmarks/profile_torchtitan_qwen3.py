@@ -79,29 +79,36 @@ def register_layer_ranges(model: Qwen3Model) -> None:
     register_module_range(model.output, "OutputProjection")
 
 
-def configure_dependency_ordered_prefetch(model: Qwen3Model) -> None:
+def configure_dependency_ordered_prefetch(
+    model: Qwen3Model, *, backward_experts_first: bool = False
+) -> None:
     layers = list(model.layers.values())
     if not layers:
         return
 
-    def layer_modules(layer: torch.nn.Module) -> list[torch.nn.Module]:
+    def forward_layer_modules(layer: torch.nn.Module) -> list[torch.nn.Module]:
         modules = [layer]
         if layer.moe_enabled:
             modules.append(layer.moe.experts)
         return modules
 
-    model.tok_embeddings.set_modules_to_forward_prefetch(layer_modules(layers[0]))
+    def backward_layer_modules(layer: torch.nn.Module) -> list[torch.nn.Module]:
+        if layer.moe_enabled and backward_experts_first:
+            return [layer.moe.experts, layer]
+        return forward_layer_modules(layer)
+
+    model.tok_embeddings.set_modules_to_forward_prefetch(forward_layer_modules(layers[0]))
     for index, layer in enumerate(layers):
         if index + 1 < len(layers):
-            layer.set_modules_to_forward_prefetch(layer_modules(layers[index + 1]))
+            layer.set_modules_to_forward_prefetch(forward_layer_modules(layers[index + 1]))
         else:
             layer.set_modules_to_forward_prefetch([model.output])
 
-    model.output.set_modules_to_backward_prefetch(layer_modules(layers[-1]))
+    model.output.set_modules_to_backward_prefetch(backward_layer_modules(layers[-1]))
     for reverse_index, layer in enumerate(reversed(layers)):
         if reverse_index + 1 < len(layers):
             previous_layer = layers[-reverse_index - 2]
-            layer.set_modules_to_backward_prefetch(layer_modules(previous_layer))
+            layer.set_modules_to_backward_prefetch(backward_layer_modules(previous_layer))
         else:
             layer.set_modules_to_backward_prefetch([model.tok_embeddings])
 
@@ -169,7 +176,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prefetch-policy",
-        choices=("torchtitan", "dependency_ordered"),
+        choices=(
+            "torchtitan",
+            "dependency_ordered",
+            "dependency_ordered_experts_first_backward",
+        ),
         default="dependency_ordered",
         help="Include endpoint expert modules so current-layer experts cannot be overtaken by next-layer prefetch.",
     )
@@ -289,8 +300,14 @@ def main() -> None:
     with torch.device("meta"):
         model = Qwen3Model(model_args)
     model = parallelize_qwen3(model, parallel_dims, job_config)
-    if args.prefetch_policy == "dependency_ordered" and args.scenario == "fsdp_ep":
-        configure_dependency_ordered_prefetch(model)
+    if args.prefetch_policy != "torchtitan" and args.scenario == "fsdp_ep":
+        configure_dependency_ordered_prefetch(
+            model,
+            backward_experts_first=(
+                args.prefetch_policy
+                == "dependency_ordered_experts_first_backward"
+            ),
+        )
     model.to_empty(device=device)
     with torch.no_grad():
         model.init_weights(buffer_device=device)

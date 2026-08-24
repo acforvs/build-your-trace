@@ -101,6 +101,7 @@
   ],
   "teachingFile": "data/teaching.json",
   "comparisonFile": "data/comparisons.json",
+  "recognitionFile": "data/recognition.json",
   "collectiveFile": "data/collectives.json",
   "tasks": [
     {

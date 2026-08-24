@@ -1,0 +1,283 @@
+{
+  "rounds": [
+    {
+      "id": "mystery-02",
+      "order": 2,
+      "title": "Mystery trace 02",
+      "summary": "One measured window. Identify the setup from its communication boundary.",
+      "trace": {
+        "taskId": "ddp-terminal",
+        "context": "Backward-only window from a two-layer dense model. The forward pass is outside the crop.",
+        "window": { "startMs": 7.8, "endMs": 28.610728 },
+        "tracks": ["compute", "ddp-comm"]
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "terminal-ddp", "label": "Data parallelism (DDP)", "nudge": "" },
+          { "id": "cp", "label": "Context parallelism", "nudge": "Context parallelism moves K/V shards within attention; it does not wait until the entire backward chain has completed." },
+          { "id": "fsdp", "label": "FSDP with parameter prefetch", "nudge": "FSDP would show parameter materialization before compute and reduce-scatter work as gradients become ready." },
+          { "id": "tp", "label": "Tensor parallelism", "nudge": "TP collectives recur at layer boundaries in both forward and backward, rather than appearing once after all gradients are ready." }
+        ],
+        "answerOptionId": "terminal-ddp",
+        "explanation": "Backward remains entirely on the compute stream, followed by one communication block after the final gradient-producing work."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern supports DDP in this window?",
+        "options": [
+          { "id": "terminal", "label": "Backward compute finishes before one final communication interval begins.", "nudge": "" },
+          { "id": "prefetch", "label": "Communication materializes parameters before every compute block.", "nudge": "The communication is after the complete compute chain, not before individual consumers." },
+          { "id": "sublayer", "label": "Every forward sublayer is bracketed by activation collectives.", "nudge": "This is a backward-only crop and does not show repeated sublayer boundaries." }
+        ],
+        "answerOptionId": "terminal",
+        "answerBlockIds": ["terminal-gradient-ar"],
+        "explanation": "The highlighted terminal all-reduce consumes the complete gradient set; no bucket communication overlaps the backward chain."
+      },
+      "reveal": {
+        "title": "DDP with terminal gradient synchronization",
+        "debrief": "This measured schedule uses one 852 MiB all-reduce after the final bucket becomes ready. Its defining signature is the absence of gradient communication during backward.",
+        "buildLabel": "DDP with terminal gradient sync"
+      }
+    },
+    {
+      "id": "mystery-06",
+      "order": 6,
+      "title": "Mystery trace 06",
+      "summary": "One measured window. Identify the setup from its overlap pattern.",
+      "trace": {
+        "taskId": "ddp-bucketed",
+        "context": "Backward-only window from a two-layer dense model. Stream A is autograd compute; the other stream carries one communication family.",
+        "window": { "startMs": 7.8, "endMs": 28.203286 },
+        "tracks": ["compute", "ddp-comm"]
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "bucketed-ddp", "label": "DDP with bucketed gradient overlap", "nudge": "" },
+          { "id": "tp", "label": "Tensor parallelism", "nudge": "Tensor-parallel collectives recur at sublayer boundaries in forward and backward rather than becoming ready progressively across dense backward." },
+          { "id": "fsdp", "label": "FSDP with prefetch", "nudge": "This window lacks the distinct pre-compute parameter all-gathers that accompany FSDP execution." },
+          { "id": "ep", "label": "Expert parallel MoE", "nudge": "EP activation exchange comes in dispatch/combine pairs around expert compute, not gradient buckets spread across dense backward." }
+        ],
+        "answerOptionId": "bucketed-ddp",
+        "explanation": "A train of communication blocks becomes ready at different points during the reverse traversal and overlaps later backward work."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern supports bucketed DDP?",
+        "options": [
+          { "id": "staggered", "label": "A sequence of collectives becomes ready at different points while backward continues.", "nudge": "" },
+          { "id": "terminal", "label": "All communication waits until the complete backward pass has finished.", "nudge": "Most purple intervals begin while Stream A still has substantial work remaining." },
+          { "id": "paired", "label": "Each compute block has one collective immediately before it and one immediately after it.", "nudge": "The collectives are staggered across backward rather than paired around every compute block." }
+        ],
+        "answerOptionId": "staggered",
+        "answerBlockIds": ["bucket-output-l1-down", "bucket-l1-up", "bucket-l1-gate", "bucket-l1-attention", "bucket-cross-layer", "bucket-l0-up", "bucket-l0-gate", "bucket-l0-attention"],
+        "explanation": "The highlighted buckets launch at staggered readiness points while autograd continues. That rules out one terminal synchronization."
+      },
+      "reveal": {
+        "title": "DDP with bucketed gradient overlap",
+        "debrief": "The repeated all-reduces are readiness-driven buckets. Their staggered starts during backward distinguish this schedule from terminal gradient synchronization.",
+        "buildLabel": "DDP buckets overlap backward"
+      }
+    },
+    {
+      "id": "mystery-04",
+      "order": 4,
+      "title": "Mystery trace 04",
+      "summary": "One measured window. Identify the setup from communication before and after compute.",
+      "trace": {
+        "taskId": "fsdp-dense",
+        "context": "Backward-only window from a two-layer dense model. The forward pass and its parameter materialization are outside the crop.",
+        "window": { "startMs": 10.3, "endMs": 33.441 },
+        "tracks": ["compute", "fsdp-ag", "fsdp-rs"]
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "fsdp", "label": "FSDP with parameter prefetch and gradient reduce-scatter", "nudge": "" },
+          { "id": "bucketed-ddp", "label": "Bucketed DDP", "nudge": "DDP does not need to materialize sharded parameters before each wrapped unit computes." },
+          { "id": "tp-sp", "label": "Tensor plus sequence parallelism", "nudge": "TP+SP places activation collectives directly around each sublayer, rather than long parameter all-gathers prefetched ahead of compute." },
+          { "id": "ep", "label": "Expert parallel MoE", "nudge": "There are no paired activation exchanges bracketing grouped expert compute in this window." }
+        ],
+        "answerOptionId": "fsdp",
+        "explanation": "One communication stream materializes upcoming parameters while another shards complete gradients after their wrapped unit finishes backward."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern supports FSDP?",
+        "options": [
+          { "id": "two-paths", "label": "One communication stream runs ahead of future compute while another starts after wrapped gradients become ready.", "nudge": "" },
+          { "id": "buckets", "label": "One stream carries many same-purpose gradient buckets throughout backward.", "nudge": "The two communication streams have different placement: one precedes consumers, while the other follows completed backward units." },
+          { "id": "activation-pairs", "label": "Activation exchange appears immediately before and after every local compute block.", "nudge": "The communication is not paired around each compute interval." }
+        ],
+        "answerOptionId": "two-paths",
+        "answerBlockIds": ["l1-bwd-ag", "l0-bwd-ag", "l1-rs", "l0-rs"],
+        "explanation": "The highlighted all-gathers run ahead of their consumers, while the highlighted blocks on the other communication stream follow completed backward units and shard their gradients."
+      },
+      "reveal": {
+        "title": "FSDP dense layer with prefetch",
+        "debrief": "The three-stream rhythm—parameter all-gather, compute, then gradient reduce-scatter—is the useful signature. Prefetch moves some all-gathers earlier but does not remove the dependency.",
+        "buildLabel": "FSDP dense layer with prefetch"
+      }
+    },
+    {
+      "id": "mystery-05",
+      "order": 5,
+      "title": "Mystery trace 05",
+      "summary": "One measured window. Count the collective boundaries around each sublayer.",
+      "trace": {
+        "taskId": "tensor-parallel-dense",
+        "context": "Forward-only window covering attention and MLP in two consecutive dense layers. Backward is outside the crop.",
+        "window": { "startMs": 0.75, "endMs": 4.15 },
+        "tracks": ["compute", "tp-comm"]
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "tp", "label": "Tensor parallelism without sequence parallelism", "nudge": "" },
+          { "id": "tp-sp", "label": "Tensor plus sequence parallelism", "nudge": "TP+SP would add an input all-gather as well as an output reduce-scatter around each attention and MLP sublayer." },
+          { "id": "fsdp", "label": "FSDP", "nudge": "These short collectives sit at every sublayer output; FSDP communication follows wrapped parameter and gradient ownership instead." },
+          { "id": "ddp", "label": "DDP", "nudge": "DDP gradient communication appears during or after backward, not between forward attention and MLP sublayers." }
+        ],
+        "answerOptionId": "tp",
+        "explanation": "Each forward sublayer computes locally and crosses one output-reduction boundary before the residual proceeds."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern distinguishes this from TP with sequence parallelism?",
+        "options": [
+          { "id": "one-boundary", "label": "Each of the four sublayers has one collective after compute and no matching collective before it.", "nudge": "" },
+          { "id": "two-boundaries", "label": "Each sublayer has communication immediately before and after compute.", "nudge": "There is no input-side purple interval before each large compute block." },
+          { "id": "backward-buckets", "label": "Collectives become ready progressively during a backward traversal.", "nudge": "The briefing identifies this as a forward-only crop." }
+        ],
+        "answerOptionId": "one-boundary",
+        "answerBlockIds": ["l0-attn-fwd-ar", "l0-mlp-fwd-ar", "l1-attn-fwd-ar", "l1-mlp-fwd-ar"],
+        "explanation": "The highlighted output collectives show one communication boundary per sublayer and no matching input collective, unlike TP+SP."
+      },
+      "reveal": {
+        "title": "Tensor-parallel dense layer",
+        "debrief": "In this TorchTitan TP schedule, each attention and MLP forward sublayer ends in an all-reduce. Sequence parallelism would replace this with an input all-gather/output reduce-scatter pair.",
+        "buildLabel": "Tensor parallel dense layer"
+      }
+    },
+    {
+      "id": "mystery-01",
+      "order": 1,
+      "title": "Mystery trace 01",
+      "summary": "One measured window. Count what moves on both sides of each sublayer.",
+      "trace": {
+        "taskId": "tensor-sequence-parallel",
+        "context": "Forward-only window covering attention and MLP in two consecutive dense layers. Backward is outside the crop.",
+        "window": { "startMs": 0.9, "endMs": 5.02 },
+        "tracks": ["compute", "tp-comm"]
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "tp-sp", "label": "Tensor plus sequence parallelism", "nudge": "" },
+          { "id": "tp", "label": "Tensor parallelism without sequence parallelism", "nudge": "Plain TP would normally expose one output all-reduce per sublayer here, not communication on both sides of each compute block." },
+          { "id": "fsdp", "label": "FSDP", "nudge": "FSDP all-gathers parameters, so its communication is prefetched by wrapped-unit readiness rather than paired tightly around every sublayer." },
+          { "id": "cp", "label": "Context parallel attention", "nudge": "CP repeats K/V movement across attention steps; it does not bracket both attention and MLP with the same pairwise rhythm." }
+        ],
+        "answerOptionId": "tp-sp",
+        "explanation": "Each sequence-sharded sublayer gathers its input activation and reduce-scatters its output back to sequence shards."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern distinguishes this from TP without sequence parallelism?",
+        "options": [
+          { "id": "two-boundaries", "label": "Each large sublayer compute interval has communication on both its input and output sides.", "nudge": "" },
+          { "id": "one-boundary", "label": "Each sublayer has only one output collective after compute.", "nudge": "Purple intervals also appear directly before the large compute blocks." },
+          { "id": "parameter-streams", "label": "Separate streams materialize parameters and then shard completed gradients.", "nudge": "The communication is tightly paired around sublayer compute rather than split into parameter and gradient streams." }
+        ],
+        "answerOptionId": "two-boundaries",
+        "answerBlockIds": ["l0-attn-fwd-ag", "l0-attn-fwd-rs", "l0-mlp-fwd-ag", "l0-mlp-fwd-rs", "l1-attn-fwd-ag", "l1-attn-fwd-rs", "l1-mlp-fwd-ag", "l1-mlp-fwd-rs"],
+        "explanation": "The highlighted collectives form an input/output pair around every sublayer: input all-gather, local compute, then output reduce-scatter."
+      },
+      "reveal": {
+        "title": "Tensor plus sequence parallel dense layer",
+        "debrief": "The recognizable pattern is two collectives per forward sublayer: input all-gather, local attention or MLP, output reduce-scatter.",
+        "buildLabel": "Tensor + sequence parallel dense layer"
+      }
+    },
+    {
+      "id": "mystery-07",
+      "order": 7,
+      "title": "Mystery trace 07",
+      "summary": "One measured window. Find where two independent communication paths meet.",
+      "trace": {
+        "taskId": "fsdp-moe-ep",
+        "context": "Backward-only window for one MoE layer. Amber is expert MLP compute; teal and red blocks are other local work. Parameter prefetch follows reverse use: experts before the outer layer.",
+        "window": { "startMs": 25, "endMs": 50 },
+        "tracks": ["compute", "fsdp-ag", "ep-a2a", "fsdp-rs"]
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "fsdp-ep", "label": "Expert FSDP plus expert parallelism", "nudge": "" },
+          { "id": "fsdp-moe", "label": "FSDP over MoE without expert parallelism", "nudge": "Without EP there would be no paired activation all-to-alls around expert backward." },
+          { "id": "ep", "label": "Expert parallelism without expert-parameter sharding", "nudge": "EP alone explains activation exchange, but not the independent parameter all-gather and gradient reduce-scatter streams." },
+          { "id": "tp-sp", "label": "Tensor plus sequence parallelism", "nudge": "TP+SP collectives bracket dense sublayers; they do not form routed activation pairs around grouped expert compute while parameter collectives proceed separately." }
+        ],
+        "answerOptionId": "fsdp-ep",
+        "explanation": "Expert compute waits on both sharded expert weights and exchanged routed activations, followed by separate activation return and expert-gradient sharding."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern requires both expert parallelism and parameter sharding?",
+        "options": [
+          { "id": "independent-paths", "label": "Activation exchanges bracket expert compute while FSDP gathers experts before outer-layer parameters and later shards gradients.", "nudge": "" },
+          { "id": "activation-only", "label": "Only routed activations move; expert weights and gradients remain entirely local.", "nudge": "Two additional communication streams contain work before and after expert compute." },
+          { "id": "parameter-only", "label": "Only expert parameters and gradients move; routed activations remain on their source ranks.", "nudge": "The middle communication stream has intervals immediately before and after the long expert compute." }
+        ],
+        "answerOptionId": "independent-paths",
+        "answerBlockIds": ["layer1-expert-bwd-ag", "layer1-bwd-dense-ag", "layer1-dy-a2a", "layer1-dx-a2a", "layer1-expert-rs"],
+        "explanation": "The highlighted activation pair brackets expert backward. On the FSDP path, expert weights are gathered first, outer-layer parameters follow, and expert gradients are later reduce-scattered."
+      },
+      "reveal": {
+        "title": "Expert FSDP plus expert parallelism",
+        "debrief": "Paired EP all-to-alls bracket grouped expert backward. FSDP independently gathers expert weights before outer-layer parameters, following reverse parameter use, then shards expert gradients. The readiness chains meet at expert compute.",
+        "buildLabel": "Two-layer expert-FSDP + expert parallelism"
+      }
+    },
+    {
+      "id": "mystery-03",
+      "order": 3,
+      "title": "Mystery trace 03",
+      "summary": "One measured window. Identify the repeated movement between attention steps.",
+      "trace": {
+        "taskId": "context-parallel-alltoall",
+        "context": "Forward-only window from one context-parallel attention layer. Four attention steps are shown; QKV preparation and the dense output path are outside the crop.",
+        "window": { "startMs": 2.15, "endMs": 8.829601 },
+        "tracks": ["compute", "comm"],
+        "anonymizedBlockLabels": {
+          "fwd-step-0": "Attention",
+          "fwd-step-1": "Attention",
+          "fwd-step-2": "Attention",
+          "fwd-step-3": "Attention"
+        }
+      },
+      "choice": {
+        "prompt": "Which setup produced this window?",
+        "options": [
+          { "id": "cp-a2a", "label": "Context parallelism with cyclic K/V all-to-all", "nudge": "" },
+          { "id": "cp-ag", "label": "Context parallelism with one K/V all-gather", "nudge": "The all-gather variant would expose one larger K/V communication block, not one transfer between successive attention steps." },
+          { "id": "tp-sp", "label": "Tensor plus sequence parallelism", "nudge": "TP+SP moves activations around whole sublayers rather than rotating K/V ownership between repeated attention steps." },
+          { "id": "ep", "label": "Expert parallelism", "nudge": "EP exchanges routed activations around expert GEMMs; this trace instead repeats attention work as remote K/V shards arrive." }
+        ],
+        "answerOptionId": "cp-a2a",
+        "explanation": "Attention advances through local and remote K/V owners, with a cyclic transfer supplying each subsequent step."
+      },
+      "evidence": {
+        "prompt": "Which visible pattern supports cyclic K/V movement?",
+        "options": [
+          { "id": "interleaved", "label": "Three transfers are interleaved with four attention steps inside one layer.", "nudge": "" },
+          { "id": "single-gather", "label": "One communication interval gathers all remote K/V before attention begins.", "nudge": "Communication repeats between attention steps rather than completing once before them." },
+          { "id": "expert-pair", "label": "Two activation exchanges bracket one expert MLP interval.", "nudge": "The repeated teal intervals are attention steps, and three transfers occur between them." }
+        ],
+        "answerOptionId": "interleaved",
+        "answerBlockIds": ["l0-kv-rotate-fwd-0", "l0-kv-rotate-fwd-1", "l0-kv-rotate-fwd-2"],
+        "explanation": "The three highlighted cyclic transfers are interleaved with four attention steps, which is the visible ring signature for one attention layer."
+      },
+      "reveal": {
+        "title": "Context parallelism with cyclic K/V all-to-all",
+        "debrief": "The signature is repeated K/V movement interleaved with attention over successive owners. A K/V all-gather implementation would show one collective before the remote-owner steps instead.",
+        "buildLabel": "Ring CP: cyclic all-to-all K/V rotation"
+      }
+    }
+  ]
+}

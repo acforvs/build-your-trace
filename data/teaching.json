@@ -571,17 +571,63 @@
     ]
   },
   "fsdp-moe": {
-    "summary": "Schedule dense and full-expert FSDP communication around a fixed two-layer MoE path.",
+    "teachingPoints": [
+      "EP=1 has no activation all-to-all, but each grouped expert GEMM still waits for the full expert FSDP unit to materialize.",
+      "Expert reduce-scatter starts only after the full expert gradient is packed and can serialize later dense reductions."
+    ],
+    "insight": "EP=1 removes activation exchange, not expert FSDP; backward still gathers experts first and later serializes very large expert-gradient reductions.",
     "objective": "Place dense and expert all-gathers at first use, then reduce-scatters when each gradient is complete.",
+    "explanation": "The measured schedule reverses expert/non-expert all-gather order in backward and preserves gradient-readiness ordering on the reduction stream.",
     "catalogTags": [
       "MoE",
       "FSDP",
       "EP=1"
     ],
-    "teachingPoints": [
-      "EP=1 has no activation all-to-all, but each grouped expert GEMM still waits for the full expert FSDP unit to materialize.",
-      "Expert reduce-scatter starts only after the full expert gradient is packed and can serialize later dense reductions."
+    "hint": "Read parameter use in reverse during backward: experts before the outer non-expert layer. Reduce-scatter still waits for each complete gradient pack.",
+    "concepts": [
+      {
+        "term": "Separate expert FSDP",
+        "definition": "Experts use an independent FSDP state so their large collectives can be scheduled separately."
+      },
+      {
+        "term": "EP=1",
+        "definition": "Every rank can route to the complete expert set; no expert-ownership exchange occurs."
+      }
     ],
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "l0-expert-fwd-ag",
+          "toBlockId": "l0-expert-copyout-fwd",
+          "label": "Expert AG gates forward compute",
+          "explanation": "Local routing finishes before the complete expert weights arrive, exposing the all-gather tail."
+        },
+        {
+          "fromBlockId": "l1-expert-bwd-ag",
+          "toBlockId": "l1-dense-bwd-ag",
+          "label": "Backward reverses parameter use",
+          "explanation": "The expert module is consumed before router and attention parameters in backward, so its all-gather is queued first."
+        },
+        {
+          "fromBlockId": "l1-dense-bwd-ag",
+          "toBlockId": "l1-unpermute-bwd",
+          "label": "Outer-layer readiness gates backward entry",
+          "explanation": "Layer 1 backward begins only after both the expert and outer non-expert FSDP units are materialized."
+        },
+        {
+          "fromBlockId": "l1-expert-grad-pack",
+          "toBlockId": "l1-expert-rs",
+          "label": "Packed expert gradients gate RS",
+          "explanation": "The expert reduce-scatter starts after the full FP32 expert gradient is packed."
+        },
+        {
+          "fromBlockId": "l1-expert-rs",
+          "toBlockId": "l1-dense-rs",
+          "label": "Expert RS blocks dense RS",
+          "explanation": "The long expert reduction occupies the serialized reduction stream and delays the already-ready dense reduction."
+        }
+      ]
+    },
     "implementationSketch": {
       "label": "Expert-FSDP without EP",
       "code": [
@@ -596,60 +642,66 @@
       ],
       "note": "Expert prefetch may overlap attention and routing, but grouped GEMM waits for the gathered weights."
     },
-    "insight": "EP=1 removes activation exchange, not expert parameter all-gathers.",
-    "hint": "Local MoE compute is fixed. Place each all-gather before its first consumer and each reduce-scatter after its gradient pack.",
-    "explanation": "dense and expert weights are gathered before use; gradients are scattered after packing.",
-    "debrief": {
-      "dependencies": [
-        {
-          "fromBlockId": "l0-expert-fwd-ag",
-          "toBlockId": "l0-expert-copyout-fwd",
-          "label": "Expert AG creates a forward stall",
-          "explanation": "Attention and routing finish before the full expert weights arrive, so expert copy-out waits on the exposed all-gather tail."
-        },
-        {
-          "fromBlockId": "l1-expert-bwd-ag",
-          "toBlockId": "l1-expert-copyout-bwd",
-          "label": "Expert AG creates a backward stall",
-          "explanation": "The local backward path reaches expert first use while the large expert-weight all-gather is still in flight."
-        },
-        {
-          "fromBlockId": "l1-expert-grad-pack",
-          "toBlockId": "l1-expert-rs",
-          "label": "Packed expert gradients gate RS",
-          "explanation": "The expert reduce-scatter begins only after the complete flat expert gradient has been packed."
-        },
-        {
-          "fromBlockId": "l1-expert-rs",
-          "toBlockId": "l1-dense-rs",
-          "label": "Expert RS blocks dense RS",
-          "explanation": "The long expert reduction occupies the serialized FSDP reduction stream, delaying the already-ready dense reduction."
-        }
-      ]
-    },
-    "concepts": [
-      {
-        "term": "Separate expert FSDP",
-        "definition": "Experts use an independent FSDP state so their large collectives can be scheduled separately."
-      },
-      {
-        "term": "EP=1",
-        "definition": "Every rank can route to the complete expert set; no expert-ownership exchange occurs."
-      }
-    ]
+    "summary": "Schedule experts-first backward prefetch and full-expert gradient sharding in a measured two-layer EP=1 MoE trace."
   },
   "fsdp-moe-ep": {
-    "summary": "Schedule expert-FSDP communication where it meets the expert-parallel activation path.",
+    "teachingPoints": [
+      "Grouped expert compute starts only after expert FSDP has materialized weights and EP has delivered expert-grouped activations.",
+      "Backward prefetch follows L1-before-L0 first use, while each expert reduce-scatter starts from its completed flat-gradient pack."
+    ],
+    "insight": "Backward parameter prefetch should reverse forward parameter use: experts are gathered before the outer non-expert layer, while EP all-to-all remains on the activation-gradient path.",
     "objective": "Place the FSDP and EP communication that gates expert forward and backward.",
+    "explanation": "The solution follows measured experts-first FSDP prefetch, waits for both backward parameter gathers at the L1 boundary, and launches each reduce-scatter when that FSDP unit's gradients become ready.",
     "catalogTags": [
       "MoE",
       "FSDP",
       "Expert Parallel"
     ],
-    "teachingPoints": [
-      "Grouped expert compute starts only after expert FSDP has materialized weights and EP has delivered expert-grouped activations.",
-      "Backward prefetch follows L1-before-L0 first use, while each expert reduce-scatter starts from its completed flat-gradient pack."
+    "hint": "Read each layer backward from its expert path toward router and attention. Expert AG comes first; the outer-layer AG follows before layer backward can begin.",
+    "concepts": [
+      {
+        "term": "Expert FSDP degree",
+        "definition": "The number of ranks that shard the experts owned by one EP group."
+      },
+      {
+        "term": "Dispatch / combine",
+        "definition": "Activation all-to-alls that move routed tokens to expert owners and outputs back to token owners."
+      }
     ],
+    "debrief": {
+      "dependencies": [
+        {
+          "fromBlockId": "layer0-expert-ag",
+          "toBlockId": "layer0-swiglu-fwd",
+          "label": "Expert weights gate forward SwiGLU",
+          "explanation": "Grouped expert compute needs both materialized expert weights and dispatched activations."
+        },
+        {
+          "fromBlockId": "layer1-expert-bwd-ag",
+          "toBlockId": "layer1-bwd-dense-ag",
+          "label": "Backward reverses parameter use",
+          "explanation": "Layer 1 experts are consumed before router and attention parameters in backward, so their all-gather is queued first."
+        },
+        {
+          "fromBlockId": "layer1-bwd-dense-ag",
+          "toBlockId": "layer1-dense-bwd-copyout",
+          "label": "Outer-layer readiness gates backward entry",
+          "explanation": "The outer non-expert FSDP unit must also be materialized before layer 1 backward can begin."
+        },
+        {
+          "fromBlockId": "layer1-dy-a2a",
+          "toBlockId": "layer1-swiglu-bwd",
+          "label": "Expert gradients arrive through EP",
+          "explanation": "Grouped expert backward starts only after expert-output gradients reach expert-owner ranks."
+        },
+        {
+          "fromBlockId": "layer1-expert-grad-pack",
+          "toBlockId": "layer1-expert-rs",
+          "label": "Expert gradients gate sharding",
+          "explanation": "Expert reduce-scatter starts when grouped backward has produced and packed the expert gradients."
+        }
+      ]
+    },
     "implementationSketch": {
       "label": "Expert-FSDP + EP data path",
       "code": [
@@ -668,47 +720,7 @@
       ],
       "note": "Dispatch can overlap expert-weight prefetch; grouped GEMM is the first operation that requires those weights."
     },
-    "insight": "Grouped expert GEMM waits for weights from FSDP and activations from EP.",
-    "hint": "In forward, join expert all-gather with dispatch before grouped GEMM. In backward, join expert all-gather with the dY exchange.",
-    "explanation": "expert GEMM begins only when routed activations and gathered weights are both ready.",
-    "debrief": {
-      "dependencies": [
-        {
-          "fromBlockId": "layer0-expert-ag",
-          "toBlockId": "layer0-swiglu-fwd",
-          "label": "Expert weights gate SwiGLU",
-          "explanation": "Grouped expert compute needs the materialized expert weights supplied by expert FSDP."
-        },
-        {
-          "fromBlockId": "layer0-dispatch",
-          "toBlockId": "layer0-swiglu-fwd",
-          "label": "Dispatched activations gate SwiGLU",
-          "explanation": "The same grouped GEMM also waits for routed activations to arrive from token-owner ranks and be grouped locally."
-        },
-        {
-          "fromBlockId": "layer1-expert-bwd-ag",
-          "toBlockId": "layer1-expert-bwd-copyout",
-          "label": "Unfinished AG exposes a stall",
-          "explanation": "Token-restore backward reaches expert first use before the expert weights are ready, so compute pauses until the all-gather completes."
-        },
-        {
-          "fromBlockId": "layer1-expert-grad-pack",
-          "toBlockId": "layer1-expert-rs",
-          "label": "Expert gradients gate sharding",
-          "explanation": "Expert FSDP can reduce-scatter only after grouped backward has produced and packed the complete expert gradient."
-        }
-      ]
-    },
-    "concepts": [
-      {
-        "term": "Expert FSDP degree",
-        "definition": "The number of ranks that shard the experts owned by one EP group."
-      },
-      {
-        "term": "Dispatch / combine",
-        "definition": "Activation all-to-alls that move routed tokens to expert owners and outputs back to token owners."
-      }
-    ]
+    "summary": "Place experts-first backward prefetches, outer-layer FSDP communication, and EP activation exchange on a measured two-layer MoE trace."
   },
   "ddp-terminal": {
     "summary": "See why one terminal gradient bucket leaves communication fully exposed.",

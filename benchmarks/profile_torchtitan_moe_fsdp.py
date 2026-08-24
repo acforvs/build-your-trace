@@ -69,7 +69,7 @@ def apply_separate_expert_fsdp(
         reshard_after_forward=False,
     )
     fully_shard(model, **fsdp_config)
-    configure_dependency_ordered_prefetch(model)
+    configure_dependency_ordered_prefetch(model, backward_experts_first=True)
 
 
 def main() -> None:
@@ -203,7 +203,7 @@ def main() -> None:
             },
             "expert_parallel_degree": 1,
             "expert_fsdp_degree": world_size,
-            "prefetch_policy": "dependency_ordered",
+            "prefetch_policy": "dependency_ordered_experts_first_backward",
             "prefetch_graph": prefetch_graph,
             "module_labels": args.module_labels,
             "mean_step_ms": sum(step_times) / len(step_times),

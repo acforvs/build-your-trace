@@ -377,86 +377,86 @@
       "prerequisites": [
         "fsdp-moe-ep"
       ],
-      "title": "Why does expert backward stop here?",
-      "summary": "Diagnose an exposed expert-weight wait as FSDP moves from NVLink to InfiniBand.",
-      "intro": "These windows preserve the same layer 1 MoE backward dependencies while changing only FSDP communication time. Determine which dependency moves onto the critical path in the cross-node model.",
+      "title": "Which weights should backward prefetch first?",
+      "summary": "Follow expert and outer-layer parameter prefetch through one MoE backward step.",
+      "intro": "Layer 1 used its outer attention/router parameters before its expert parameters in forward. Backward needs those parameter groups in the opposite order. Compare that dependency chain on NVLink and modeled InfiniBand.",
       "caveat": "The right panel is an analytical NDR400 variant. It preserves the measured compute and EP durations and changes only FSDP collective timing to 42.5 GB/s effective bandwidth per rank.",
       "tags": [
         "FSDP",
         "Expert Parallel",
         "Critical path"
       ],
-      "scaleMs": 31,
+      "scaleMs": 40,
       "left": {
         "label": "NVLink baseline",
         "taskId": "fsdp-moe-ep",
-        "startMs": 25.5,
-        "endMs": 42.5,
+        "startMs": 25,
+        "endMs": 40.5,
         "tracks": [
           "compute",
           "fsdp-ag",
           "ep-a2a",
           "fsdp-rs"
         ],
-        "caption": "Measured NVLink timing for the layer 1 backward dependency window."
+        "caption": "Measured ordering: layer 1 experts, layer 1 outer parameters, then layer 0 expert prefetch."
       },
       "right": {
         "label": "Modeled cross-node FSDP",
         "taskId": "fsdp-moe-ep",
         "variantId": "ib",
         "startMs": 43,
-        "endMs": 73.5,
+        "endMs": 83,
         "tracks": [
           "compute",
           "fsdp-ag",
           "ep-a2a",
           "fsdp-rs"
         ],
-        "caption": "The same compute and EP timing with analytically scaled FSDP communication."
+        "caption": "The same dependency order after scaling only FSDP collectives to cross-node bandwidth."
       },
       "questions": [
         {
           "kind": "choice",
           "stage": "Predict",
-          "prompt": "When does a prefetched parameter all-gather become an exposed compute stall?",
+          "prompt": "Layer 1 used attention/router parameters before expert parameters in forward. Which group should FSDP prefetch first for backward?",
           "options": [
             {
-              "id": "late",
-              "label": "Its consumer becomes ready before the all-gather has materialized the parameters."
+              "id": "experts",
+              "label": "Expert parameters, because backward reaches expert parameter use before attention/router parameter use."
             },
             {
-              "id": "starts",
-              "label": "As soon as the all-gather starts on a non-default CUDA stream."
+              "id": "outer",
+              "label": "Attention/router parameters, preserving the forward all-gather order."
             },
             {
-              "id": "overlap",
-              "label": "Whenever any compute overlaps the collective."
+              "id": "either",
+              "label": "Either group; prefetch order cannot affect the backward critical path."
             }
           ],
-          "answerOptionId": "late",
-          "nudge": "Overlap is useful until the consumer reaches first use and the parameters are still unavailable.",
-          "explanation": "Prefetch is hidden only while useful predecessor compute lasts. Once the consumer is ready, the unfinished all-gather becomes critical-path wait."
+          "answerOptionId": "experts",
+          "nudge": "Walk the forward graph in reverse from combine and expert output toward routing and attention.",
+          "explanation": "Backward crosses combine, then the expert path, before returning to router and attention. Expert weights are therefore the first parameter group needed by layer 1 backward."
         },
         {
-          "prompt": "Which communication is still in flight when the local token-restore backward kernel finishes?",
+          "prompt": "Which collective completes the serialized layer 1 prefetch and releases its outer FSDP backward gate?",
           "side": "right",
-          "answerBlockId": "layer1-expert-bwd-ag",
-          "nudge": "Compare the end of L1 Token Restore BWD with the communication still running on the FSDP parameter all-gather track.",
-          "explanation": "L1 Token Restore BWD ends at 50.25 ms, while the layer 1 expert-weight all-gather continues to 61.18 ms. The later dY all-to-all is a separate stage: it is the backward of the forward combine collective, not this local restore kernel."
+          "answerBlockId": "layer1-bwd-dense-ag",
+          "nudge": "The expert all-gather runs first. Find the parameter collective immediately after it on the same stream.",
+          "explanation": "The layer 1 expert all-gather finishes first, but the outer FSDP unit still needs its attention/router parameters materialized. The outer-parameter all-gather completes at 61.63 ms and releases the backward gate."
         },
         {
-          "prompt": "Which compute operation runs first once the layer 1 expert weights become available?",
-          "side": "right",
-          "answerBlockId": "layer1-expert-bwd-copyout",
-          "nudge": "Find the first compute block beginning exactly where the exposed wait ends.",
-          "explanation": "Expert parameter copy-out resumes the compute path as soon as the all-gather is complete. Dispatch-backward and grouped expert GEMMs follow from those materialized weights."
-        },
-        {
-          "prompt": "Which later expert prefetch overlaps layer 1 expert backward instead of blocking it?",
-          "side": "right",
+          "prompt": "Which layer 0 parameter prefetch starts while layer 1 token-combine and expert backward are running?",
+          "side": "left",
           "answerBlockId": "layer0-expert-bwd-prefetch",
-          "nudge": "Find the next-layer expert all-gather running alongside layer 1 expert backward.",
-          "explanation": "Layer 0 expert weights are prefetched while layer 1 dispatch-backward and expert GEMMs run. Unlike the layer 1 all-gather, this communication is early enough to be partly hidden by useful compute."
+          "nudge": "Follow the all-gather stream after both layer 1 parameter groups are available.",
+          "explanation": "Layer 0 expert weights are prefetched while layer 1 traverses token-combine backward, EP communication, and grouped expert GEMMs. This is the useful cross-layer overlap that backward prefetch is intended to create."
+        },
+        {
+          "prompt": "Which collective must wait for the layer 0 expert prefetch to leave the serialized FSDP all-gather stream?",
+          "side": "right",
+          "answerBlockId": "layer0-bwd-dense-ag",
+          "nudge": "Look for the next parameter collective after the long layer 0 expert all-gather.",
+          "explanation": "Layer 0 outer parameters cannot use the all-gather stream until its expert prefetch completes. On modeled InfiniBand, that expert collective runs for 14.26 ms, so the dense/outer all-gather does not begin until 78.67 ms."
         }
       ]
     },

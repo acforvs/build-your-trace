@@ -158,6 +158,15 @@
             <div class="comparison-groups" data-comparison-grid></div>
           </div>
         </details>
+        <details class="chapter-panel comparison-catalog" id="name-parallelism" data-chapter-panel="recognize" open>
+          <summary class="chapter-heading">
+            <div><span>Chapter 3</span><h3>Name that parallelism</h3><p>Read an anonymized measured trace, identify the setup, and point to the evidence.</p></div>
+            <small data-recognition-count></small>
+          </summary>
+          <div class="chapter-content">
+            <div class="comparison-grid" data-recognition-grid></div>
+          </div>
+        </details>
       </section>
       <footer class="home-footer">
         <div class="wrap home-footer-inner">
@@ -320,6 +329,46 @@
             </div>
           </section>
           <section class="trace-pair" data-trace-pair></section>
+        </main>
+      </div>
+    </template>
+
+    <template id="recognition-template">
+      <div class="comparison-page recognition-page">
+        <header class="comparison-header wrap">
+          <a href="#/" class="back-link">← All challenges</a>
+          <div class="comparison-title-row">
+            <div>
+              <p class="eyebrow" data-recognition-kicker></p>
+              <h1 data-recognition-title></h1>
+              <p data-recognition-summary></p>
+            </div>
+            <div class="comparison-progress" data-recognition-progress></div>
+          </div>
+        </header>
+        <main class="comparison-main wrap">
+          <section class="comparison-intro recognition-intro">
+            <div><p>Kernel names and stream identities are hidden. Use event types, timing, and dependency structure to identify the parallelism.</p></div>
+          </section>
+          <section class="dependency-question" data-recognition-question>
+            <div class="question-count" data-question-count></div>
+            <h2 data-question-prompt></h2>
+            <p class="question-instruction" data-question-instruction></p>
+            <div class="question-options" data-question-options></div>
+            <div class="question-feedback" data-question-feedback aria-live="polite"></div>
+            <div class="recognition-reveal" data-recognition-reveal hidden></div>
+            <div class="question-actions">
+              <a class="secondary-button" data-recognition-next hidden>Next round <span>→</span></a>
+              <a class="secondary-button" href="#/" data-recognition-done hidden>Challenge library <span>→</span></a>
+              <button class="secondary-button" type="button" data-question-next hidden>Point to the evidence <span>→</span></button>
+              <button class="primary-button" type="button" data-question-check disabled>Check answer <span>→</span></button>
+            </div>
+          </section>
+          <section class="recognition-trace">
+            <div class="recognition-context"><strong>Window shown</strong><span data-recognition-context></span></div>
+            <div class="recognition-trace-key"><div class="legend recognition-legend" data-recognition-legend aria-label="Operation type colors"></div><p>Colors preserve operation types; width and placement preserve the measured geometry.</p></div>
+            <div data-recognition-trace></div>
+          </section>
         </main>
       </div>
     </template>

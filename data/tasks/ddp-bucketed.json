@@ -130,6 +130,7 @@
       "startMs": 11.808156,
       "durationMs": 1.446271,
       "track": "ddp-comm",
+      "acceptedSlotIds": ["bucket-l1-up", "bucket-l1-gate"],
       "description": "Bucket 1 contains only layers.1.feed_forward.w3.weight: 100,663,296 bytes."
     },
     {
@@ -140,6 +141,7 @@
       "startMs": 13.256923,
       "durationMs": 1.401184,
       "track": "ddp-comm",
+      "acceptedSlotIds": ["bucket-l1-up", "bucket-l1-gate"],
       "description": "Bucket 2 contains only layers.1.feed_forward.w1.weight: 100,663,296 bytes."
     },
     {
@@ -170,6 +172,7 @@
       "startMs": 21.319993,
       "durationMs": 1.092319,
       "track": "ddp-comm",
+      "acceptedSlotIds": ["bucket-l0-up", "bucket-l0-gate"],
       "description": "Bucket 5 contains layers.0.feed_forward.w3.weight: 100,663,296 bytes."
     },
     {
@@ -180,6 +183,7 @@
       "startMs": 22.413752,
       "durationMs": 1.304672,
       "track": "ddp-comm",
+      "acceptedSlotIds": ["bucket-l0-up", "bucket-l0-gate"],
       "description": "Bucket 6 contains layers.0.feed_forward.w1.weight: 100,663,296 bytes."
     },
     {
