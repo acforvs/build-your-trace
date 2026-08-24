@@ -12,7 +12,7 @@ const scrollPositionKey = "build-your-trace:scroll-positions:v1";
 const themeKey = "build-your-trace:theme:v1";
 const placementKey = "build-your-trace:placements:v1";
 const taskTimelineLabelWidth = 128;
-const state = { tasks: [], comparisons: [], collectives: [], assumptions: {}, resources: {}, social: {}, activeBlock: null, placements: new Map(), completed: new Set(), comparisonsCompleted: new Set(), collectivesCompleted: new Set(), solutionRevealed: false, preRevealPlacements: null, activeTask: null, timelineZoom: 1, timelineNaturalWidth: 0, timelineAtFit: false, timelineZoomController: null, comparisonZoomControllers: [], focusedComparisonSide: null, suppressPlacementSave: false, activeDebriefIndex: 0, cancelInteraction: null };
+const state = { tasks: [], comparisons: [], collectives: [], assumptions: {}, resources: {}, social: {}, activeBlock: null, keyboardOrigin: null, placements: new Map(), completed: new Set(), comparisonsCompleted: new Set(), collectivesCompleted: new Set(), solutionRevealed: false, preRevealPlacements: null, activeTask: null, timelineZoom: 1, timelineNaturalWidth: 0, timelineAtFit: false, timelineZoomController: null, comparisonZoomControllers: [], focusedComparisonSide: null, suppressPlacementSave: false, activeDebriefIndex: 0, cancelInteraction: null };
 let activeRouteKey = null;
 let scrollTrackingReady = false;
 let pendingChallengeScroll = false;
@@ -434,14 +434,19 @@ function renderGame(sourceTask, variantId) {
   const task = resolveTaskVariant(sourceTask, variantId);
   state.activeTask = task;
   state.activeBlock = null;
+  state.keyboardOrigin = null;
   state.placements = new Map();
   state.solutionRevealed = false;
   state.preRevealPlacements = null;
   state.cancelInteraction = () => {
     if (!state.activeBlock) return false;
+    const origin = state.keyboardOrigin || app.querySelector("[data-block].selected");
     state.activeBlock = null;
     app.querySelectorAll("[data-block]").forEach((button) => button.classList.remove("selected"));
     app.querySelectorAll("[data-slot]").forEach((slot) => slot.classList.remove("selectable"));
+    state.keyboardOrigin = null;
+    updateKeyboardPlacement();
+    requestAnimationFrame(() => origin?.focus());
     return true;
   };
   const fragment = document.querySelector("#game-template").content.cloneNode(true);
@@ -569,6 +574,12 @@ function buildTimeline(task) {
         slot.classList.remove("drag-over");
         placeBlock(event.dataTransfer.getData("text/plain"), slot.dataset.slot, task);
       });
+      slot.addEventListener("keydown", (event) => {
+        if (state.activeBlock && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          placeBlock(state.activeBlock, slot.dataset.slot, task, { keyboard: true });
+        }
+      });
       slot.addEventListener("click", () => {
         if (state.activeBlock) placeBlock(state.activeBlock, slot.dataset.slot, task);
       });
@@ -585,6 +596,12 @@ function configureSlot(slot, task) {
     event.preventDefault();
     slot.classList.remove("drag-over");
     placeBlock(event.dataTransfer.getData("text/plain"), slot.dataset.slot, task);
+  });
+  slot.addEventListener("keydown", (event) => {
+    if (state.activeBlock && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      placeBlock(state.activeBlock, slot.dataset.slot, task, { keyboard: true });
+    }
   });
   slot.addEventListener("click", () => {
     if (state.activeBlock) placeBlock(state.activeBlock, slot.dataset.slot, task);
@@ -903,7 +920,13 @@ function buildPalette(task) {
       button.classList.add("dragging");
     });
     button.addEventListener("dragend", () => button.classList.remove("dragging"));
-    button.addEventListener("click", () => selectBlock(block.id));
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectBlock(block.id, { keyboard: true, origin: button });
+      }
+    });
+    button.addEventListener("click", () => selectBlock(block.id, { origin: button }));
     bindBlockTooltip(button, block);
     palette.append(button);
   });
@@ -941,11 +964,75 @@ function placeFixedBlocks(task) {
   });
 }
 
-function selectBlock(blockId) {
+function orderedEmptySlots(task) {
+  const trackOrder = new Map(task.tracks.map((track, index) => [track.id, index]));
+  const phaseOrder = new Map((task.phases || []).map((phase, index) => [phase.id, index]));
+  return [...app.querySelectorAll(".trace-slot:not([data-occupied])")].sort((left, right) => {
+    if (task.timelineMode === "absolute") {
+      const leftBlock = task.blocks.find((block) => block.id === left.dataset.slot);
+      const rightBlock = task.blocks.find((block) => block.id === right.dataset.slot);
+      return (leftBlock?.startMs || 0) - (rightBlock?.startMs || 0)
+        || (trackOrder.get(leftBlock?.track) || 0) - (trackOrder.get(rightBlock?.track) || 0);
+    }
+    const [leftTrack, leftPhase] = left.dataset.slot.split(":");
+    const [rightTrack, rightPhase] = right.dataset.slot.split(":");
+    return (phaseOrder.get(leftPhase) || 0) - (phaseOrder.get(rightPhase) || 0)
+      || (trackOrder.get(leftTrack) || 0) - (trackOrder.get(rightTrack) || 0);
+  });
+}
+
+function updateKeyboardPlacement() {
+  const indicator = app.querySelector("[data-keyboard-placement]");
+  if (!indicator) return;
+  app.querySelectorAll(".keyboard-target").forEach((slot) => slot.classList.remove("keyboard-target"));
+  const block = state.activeTask?.blocks.find((item) => item.id === state.activeBlock);
+  indicator.hidden = !block;
+  indicator.innerHTML = block
+    ? `<strong>Placing</strong><span>${escapeHtml(block.shortLabel || block.label)}</span><small>Tab targets · Enter to place</small>`
+    : "";
+}
+
+function focusKeyboardTarget(slot, slots = orderedEmptySlots(state.activeTask)) {
+  if (!slot) return;
+  app.querySelectorAll(".keyboard-target").forEach((item) => item.classList.remove("keyboard-target"));
+  slot.classList.add("keyboard-target");
+  slot.focus();
+  const indicator = app.querySelector("[data-keyboard-placement]");
+  const hint = indicator?.querySelector("small");
+  const index = slots.indexOf(slot);
+  if (hint && index !== -1) hint.textContent = `Target ${index + 1}/${slots.length} · Tab moves · Enter places`;
+}
+
+function focusPaletteButton(button) {
+  if (!button) return;
+  if (button.hidden) app.querySelector(`.palette-group-button[data-palette-group="${CSS.escape(button.dataset.paletteGroup)}"]`)?.click();
+  requestAnimationFrame(() => button.focus());
+}
+
+function focusNextPaletteBlock() {
+  const enabled = [...app.querySelectorAll("[data-block]:not(:disabled)")];
+  if (!enabled.length) {
+    requestAnimationFrame(() => app.querySelector("[data-check]")?.focus());
+    return;
+  }
+  let next = enabled.find((button) => !button.hidden);
+  if (!next) {
+    next = enabled[0];
+  }
+  focusPaletteButton(next);
+}
+
+function selectBlock(blockId, { keyboard = false, origin = null } = {}) {
   if (state.placements.has(blockId)) return;
   state.activeBlock = state.activeBlock === blockId ? null : blockId;
+  state.keyboardOrigin = state.activeBlock ? origin : null;
   app.querySelectorAll("[data-block]").forEach((element) => element.classList.toggle("selected", element.dataset.block === state.activeBlock));
   app.querySelectorAll(".trace-slot").forEach((slot) => slot.classList.toggle("selectable", Boolean(state.activeBlock) && !slot.dataset.occupied));
+  updateKeyboardPlacement();
+  if (keyboard && state.activeBlock) {
+    const targets = orderedEmptySlots(state.activeTask);
+    requestAnimationFrame(() => focusKeyboardTarget(targets[0], targets));
+  }
 }
 
 function targetSlotId(task, block) {
@@ -974,7 +1061,7 @@ function getCalloutPresentation(task, block) {
   return null;
 }
 
-function placeBlock(blockId, slotId, task) {
+function placeBlock(blockId, slotId, task, { keyboard = false } = {}) {
   if (!blockId) return;
   const block = task.blocks.find((item) => item.id === blockId);
   const slot = app.querySelector(`[data-slot="${CSS.escape(slotId)}"]`);
@@ -999,9 +1086,12 @@ function placeBlock(blockId, slotId, task) {
   paletteBlock.disabled = true;
   paletteBlock.classList.remove("selected");
   state.activeBlock = null;
+  state.keyboardOrigin = null;
+  updateKeyboardPlacement();
   clearValidationFeedback();
   updateProgress(task);
   savePlacements(task);
+  if (keyboard) focusNextPaletteBlock();
 }
 
 function clearSlot(slotId) {
@@ -1024,6 +1114,7 @@ function removeBlock(blockId) {
   clearValidationFeedback();
   updateProgress(state.activeTask);
   savePlacements(state.activeTask);
+  return paletteBlock;
 }
 
 function updateProgress(task) {
@@ -1052,6 +1143,8 @@ function resetGame(task, { clearSaved = true } = {}) {
   hideCompletionDebrief();
   state.placements.clear();
   state.activeBlock = null;
+  state.keyboardOrigin = null;
+  updateKeyboardPlacement();
   app.querySelectorAll(".trace-slot:not([data-fixed])").forEach((slot) => clearSlot(slot.dataset.slot));
   app.querySelectorAll("[data-block]").forEach((block) => { block.disabled = false; block.classList.remove("selected"); });
   const resultBanner = app.querySelector("[data-result-banner]");
@@ -1684,6 +1777,71 @@ document.addEventListener("fullscreenchange", () => {
   requestAnimationFrame(() => state.comparisonZoomControllers.forEach(({ controller }) => controller.fit()));
 });
 document.addEventListener("keydown", (event) => {
+  const gamePage = app.querySelector(".game-page");
+  const editable = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.isContentEditable;
+  if (gamePage && !editable && (event.key === "Delete" || event.key === "Backspace")) {
+    const slot = event.target.closest?.(".trace-slot[data-occupied]:not([data-fixed])");
+    if (slot) {
+      const paletteBlock = removeBlock(slot.dataset.occupied);
+      requestAnimationFrame(() => paletteBlock?.focus());
+      event.preventDefault();
+      return;
+    }
+  }
+  if (gamePage && state.activeBlock && event.key === "Tab") {
+    const slots = orderedEmptySlots(state.activeTask);
+    if (slots.length) {
+      const currentIndex = slots.indexOf(document.activeElement);
+      const direction = event.shiftKey ? -1 : 1;
+      const nextIndex = currentIndex === -1
+        ? (event.shiftKey ? slots.length - 1 : 0)
+        : (currentIndex + direction + slots.length) % slots.length;
+      focusKeyboardTarget(slots[nextIndex], slots);
+      event.preventDefault();
+      return;
+    }
+  }
+  if (gamePage && !state.activeBlock && event.key === "Tab") {
+    const paletteBlocks = [...app.querySelectorAll("[data-block]:not(:disabled)")];
+    const currentIndex = paletteBlocks.indexOf(document.activeElement);
+    const outsideWorkspace = !event.target.closest?.(".workspace");
+    if (currentIndex !== -1) {
+      const nextIndex = currentIndex + (event.shiftKey ? -1 : 1);
+      if (nextIndex >= 0 && nextIndex < paletteBlocks.length) focusPaletteButton(paletteBlocks[nextIndex]);
+      else if (event.shiftKey) focusPaletteButton(paletteBlocks[paletteBlocks.length - 1]);
+      else app.querySelector("[data-check]")?.focus();
+      event.preventDefault();
+      return;
+    }
+    if (outsideWorkspace || event.target === app) {
+      if (paletteBlocks.length) focusPaletteButton(paletteBlocks[event.shiftKey ? paletteBlocks.length - 1 : 0]);
+      else app.querySelector("[data-check]")?.focus();
+      event.preventDefault();
+      return;
+    }
+  }
+  if (gamePage && !editable && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (event.key === "+" || event.key === "=") {
+      state.timelineZoomController?.zoomBy(1.2);
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "-" || event.key === "_") {
+      state.timelineZoomController?.zoomBy(1 / 1.2);
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "0") {
+      state.timelineZoomController?.fit();
+      event.preventDefault();
+      return;
+    }
+    if (event.key.toLowerCase() === "f") {
+      void setTraceFocus(!document.body.classList.contains("trace-focus"));
+      event.preventDefault();
+      return;
+    }
+  }
   const debrief = app.querySelector("[data-completion-debrief]:not([hidden])");
   if (debrief && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
     const dependencies = state.activeTask ? debriefDependencies(state.activeTask) : [];
