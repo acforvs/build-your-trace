@@ -90,6 +90,32 @@ function completionGithubLink() {
   return `<a class="completion-social" href="${escapeHtml(github.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(github.completionPrompt || "Found this useful? Star the project on GitHub.")} <span aria-hidden="true">↗</span></a>`;
 }
 
+function completionTaskActions(task) {
+  return `<span class="completion-task-actions">${completionGithubLink()}<button class="completion-share" type="button" data-share-task="${escapeHtml(task.id)}"><span aria-hidden="true">↗</span> Share completion</button></span>`;
+}
+
+async function shareTaskCompletion(taskId) {
+  const task = state.tasks.find((item) => item.id === taskId && !item.catalogHidden);
+  if (!task) return;
+  const basePath = location.pathname.endsWith("/") ? location.pathname : location.pathname.replace(/[^/]*$/, "");
+  const shareUrl = new URL(`${basePath}share/${encodeURIComponent(task.id)}/`, location.origin);
+  shareUrl.searchParams.set("v", "2");
+  const url = shareUrl.href;
+  const text = `I completed “${task.title}” — an interactive exercise in distributed LLM training.`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: `Distributed LLM training: ${task.title}`, text: `${text}\n\n${url}` });
+    } catch (error) {
+      if (error?.name !== "AbortError") console.warn("Could not open the share sheet", error);
+    }
+    return;
+  }
+  const intent = new URL("https://twitter.com/intent/tweet");
+  intent.searchParams.set("text", text);
+  intent.searchParams.set("url", url);
+  window.open(intent, "_blank", "noopener,noreferrer");
+}
+
 const typeMeta = {
   attention: { label: "Attention", className: "attention" },
   mlp: { label: "MLP / experts", className: "mlp" },
@@ -1263,7 +1289,7 @@ function checkTrace(task) {
     resultBanner.className = "result-banner success";
     resultBanner.querySelector("[data-result-label]").textContent = "Correct trace";
     status.className = "status-message success";
-    status.innerHTML = `<span>Trace complete — ${escapeHtml(task.explanation)}</span>${completionGithubLink()}`;
+    status.innerHTML = `<span>Trace complete — ${escapeHtml(task.explanation)}</span>${completionTaskActions(task)}`;
     state.completed.add(task.id);
     localStorage.setItem(progressKey, JSON.stringify([...state.completed]));
     showCompletionDebrief(task);
@@ -2064,6 +2090,11 @@ document.addEventListener("keydown", (event) => {
     void setTraceFocus(false);
   }
   if (document.body.classList.contains("comparison-focus")) setComparisonFocus(app.querySelector(".comparison-trace-panel.is-focused"), false);
+});
+
+document.addEventListener("click", (event) => {
+  const shareButton = event.target.closest?.("[data-share-task]");
+  if (shareButton) void shareTaskCompletion(shareButton.dataset.shareTask);
 });
 
 try {
