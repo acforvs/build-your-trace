@@ -27,8 +27,8 @@ for (const task of tasks.filter((task) => !task.catalogHidden)) {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title><meta name="description" content="${escapeHtml(description)}">
 <meta property="og:type" content="website"><meta property="og:title" content="${escapeHtml(title)}"><meta property="og:description" content="${escapeHtml(description)}">
-<meta property="og:url" content="https://trace.vladsavinov.com/share/${escapeHtml(task.id)}/"><meta property="og:image" content="https://trace.vladsavinov.com/assets/share-cards/${escapeHtml(task.id)}.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${escapeHtml(title)}"><meta name="twitter:description" content="${escapeHtml(description)}"><meta name="twitter:image" content="https://trace.vladsavinov.com/assets/share-cards/${escapeHtml(task.id)}.png">
+<meta property="og:url" content="https://trace.vladsavinov.com/share/${escapeHtml(task.id)}/"><meta property="og:image" content="https://trace.vladsavinov.com/assets/share-cards/${escapeHtml(task.id)}.png?v=3"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${escapeHtml(title)}"><meta name="twitter:description" content="${escapeHtml(description)}"><meta name="twitter:image" content="https://trace.vladsavinov.com/assets/share-cards/${escapeHtml(task.id)}.png?v=3">
 <script>location.replace("../../#/task/${escapeHtml(task.id)}")</script></head>
 <body><p><a href="../../#/task/${escapeHtml(task.id)}">Open the exercise</a></p></body></html>\n`);
 }

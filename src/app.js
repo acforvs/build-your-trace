@@ -99,7 +99,7 @@ async function shareTaskCompletion(taskId) {
   if (!task) return;
   const basePath = location.pathname.endsWith("/") ? location.pathname : location.pathname.replace(/[^/]*$/, "");
   const shareUrl = new URL(`${basePath}share/${encodeURIComponent(task.id)}/`, location.origin);
-  shareUrl.searchParams.set("v", "2");
+  shareUrl.searchParams.set("v", "3");
   const url = shareUrl.href;
   const text = `I completed “${task.title}” — an interactive exercise in distributed LLM training.`;
   if (navigator.share) {
